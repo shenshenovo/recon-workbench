@@ -1,51 +1,472 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>三维重建工作台</title>
-<style>
-:root{color-scheme:dark;--bg:#0c1220;--panel:#141e30;--line:#2a3850;--muted:#9caec8;--text:#e7eef8;--accent:#62dfc8}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 system-ui,-apple-system,sans-serif}header{padding:25px 32px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}h1{font-size:24px;margin:0}h2{font-size:17px;margin:0 0 16px}p{margin:7px 0;color:var(--muted)}.badge{background:#183f3c;border:1px solid #2a6f64;padding:4px 12px;border-radius:20px;color:var(--accent)}main{max-width:1500px;margin:auto;padding:26px;display:grid;grid-template-columns:340px minmax(0,1fr);gap:24px}.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px;margin-bottom:22px}label{display:block;color:var(--muted);margin:12px 0 5px}input,select,button{font:inherit}input:not([type=checkbox]),select{width:100%;padding:10px 12px;background:#0d1626;color:var(--text);border:1px solid var(--line);border-radius:8px}button{border:1px solid var(--line);border-radius:8px;background:#20314c;color:var(--text);padding:9px 13px;cursor:pointer}button:hover{border-color:var(--accent)}button:disabled{opacity:.5;cursor:default}.primary{background:var(--accent);color:#0d2823;font-weight:700;border:0;width:100%;margin-top:18px}.row{display:flex;gap:10px;align-items:center}.row>*{flex:1}.check{display:flex;gap:8px;align-items:center}.check input{width:auto}.note{font-size:12px;color:var(--muted)}.title{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.title h2{margin:0}.status{font-size:22px;font-weight:650;color:var(--accent)}progress{width:100%;accent-color:var(--accent);height:8px}pre{white-space:pre-wrap;word-break:break-word;background:#091222;border:1px solid var(--line);padding:14px;border-radius:9px;height:220px;overflow:auto;font:12px/1.6 ui-monospace,monospace;color:#b9c9df}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:500}tbody tr:hover{background:#1c2b43}.name-button{background:transparent;border:0;padding:0;text-align:left;color:var(--accent)}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.metric{padding:14px;background:#0d1626;border-radius:10px}.metric span{display:block;color:var(--muted);font-size:12px}.metric b{font-size:22px}.charts{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}canvas{width:100%;height:180px;background:#0d1626;border-radius:10px}.preview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.preview-grid img{width:100%;border-radius:10px}.message{margin:0 0 20px;padding:12px 16px;border-radius:8px;background:#183f3c;color:#c9f8ed;display:none}.message.error{background:#492b33;color:#ffd3d9}.stage{font-size:12px;padding:5px 0;color:var(--muted)}dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:12px;width:560px;max-width:95vw}dialog::backdrop{background:#0009}#folders{max-height:320px;overflow:auto;display:grid;gap:8px;margin:15px 0}#folders button{text-align:left}details{margin-top:12px}summary{cursor:pointer;color:var(--muted)}.empty{text-align:center;padding:22px;color:var(--muted)}@media(max-width:960px){main{grid-template-columns:1fr}header{padding:20px}.charts{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}}
-main>div,aside,.card{min-width:0}canvas{max-width:100%}.title{flex-wrap:wrap;gap:12px}.title>div{display:flex;flex-wrap:wrap;gap:8px}header{flex-wrap:wrap;gap:15px}@media(max-width:960px){main{grid-template-columns:minmax(0,1fr)}.preview-grid{grid-template-columns:minmax(0,1fr)}}
-#point-canvas{height:480px;width:100%;touch-action:none;border:1px solid var(--line)}.upload-preview{display:flex;overflow:auto;gap:8px;margin:12px 0}.upload-preview img{width:80px;height:60px;object-fit:cover;border-radius:6px}.viewer-tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.viewer-tools select{width:auto}
-</style></head><body>
-<header><div><h1>三维重建工作台</h1><p>上传照片，选择方法，查看三维重建结果。</p></div><span class="badge">本地运行</span></header>
-<main><aside><section class="card"><h2>上传照片</h2><p class="note">选择至少两张有重叠的 JPG / PNG 图片。上传完成后可直接开始重建。</p><input id="photos" type="file" accept="image/jpeg,image/png" multiple><div id="upload-preview" class="upload-preview"></div><button id="upload" type="button">上传并作为重建输入</button><p id="upload-info" class="note">尚未选择照片</p></section><section class="card"><h2>新建重建任务</h2><form id="form">
-<label for="name">实验名称</label><input id="name" value="courtyard" maxlength="60" required>
-<label for="method">重建路线</label><select id="method"><option value="3dgs">3DGS · 高斯场景</option><option value="mvs">MVS · 点云与网格</option><option value="sfm">SfM · 稀疏重建</option></select>
-<label for="input_type">输入类型</label><select id="input_type"><option value="dataset">已整理的 Brush 数据集</option><option value="sfm-output">已有 SfM 结果</option><option value="images">原始照片</option></select>
-<label for="input">项目内的输入目录</label><input id="input" value="data/brush/courtyard" required><button type="button" id="browse" style="margin-top:8px">浏览项目目录</button>
-<div class="row"><div><label for="resolution">最大边长</label><input id="resolution" type="number" value="1200" min="64" max="8192"></div><div><label for="threads">CPU 线程</label><input id="threads" type="number" value="4" min="1" max="32"></div></div>
-<div id="photo-options"><label for="camera">相机模型</label><select id="camera"><option>PINHOLE</option><option>SIMPLE_RADIAL</option><option>OPENCV</option><option>OPENCV_FISHEYE</option></select><p class="note">ETH3D 去畸变照片选 PINHOLE，普通照片通常选 SIMPLE_RADIAL。</p></div>
-<div id="gs-options"><label for="steps">训练步数</label><input id="steps" type="number" value="5000" min="1" max="1000000"><label for="eval">评估划分</label><select id="eval"><option value="8">每 8 张留出一张</option><option value="5">每 5 张留出一张</option><option value="0">全部用于训练，不评估</option></select><label class="check"><input id="save-images" type="checkbox" checked>保存评估渲染图片</label><label class="check"><input id="viewer" type="checkbox">训练时打开 Brush 窗口</label></div>
-<div id="mvs-options" hidden><label for="mvs-stage">输出阶段</label><select id="mvs-stage"><option value="textured">纹理模型</option><option value="mesh">表面网格</option><option value="dense">稠密点云</option></select></div>
-<details><summary>更多参数</summary><label for="max-splats">高斯数量上限</label><input id="max-splats" type="number" value="1000000" min="1" max="10000000"><div class="row"><div><label for="export-every">导出间隔</label><input id="export-every" type="number" value="1000" min="1"></div><div><label for="eval-every">评估间隔</label><input id="eval-every" type="number" value="1000" min="1"></div></div><label for="seed">随机种子</label><input id="seed" type="number" value="42" min="0"></details>
-<button id="start" class="primary" type="submit">开始重建</button><p class="note">一次运行一个任务。结果自动保存到新的实验目录。</p></form></section>
-<section class="card"><h2>指标说明</h2><p class="note">SfM：注册率和重投影误差。<br>MVS：另记录点数与三角面数。<br>3DGS：在留出视图上记录 PSNR、SSIM。</p><p class="note">点数与高斯数不等价；没有几何真值时不评估表面精度。比较图像质量时，请使用相同视图、分辨率和评估分组。</p></section></aside>
-<div><div id="message" class="message" role="status"></div>
-<section class="card"><div class="title"><h2>运行状态</h2><button id="cancel" disabled>停止任务</button></div><div id="status" class="status">等待任务</div><p id="task-path">选择一条路线，开始第一个实验。</p><progress id="progress" max="100" value="0"></progress><div id="stages"></div><details><summary>查看运行日志</summary><pre id="log">暂无日志</pre></details></section>
-<section class="card"><div class="title"><h2>实验对比</h2><button id="report">导出选中项 JSON / CSV</button></div><p class="note">点击实验名称查看细节。耗时按当前任务范围统计，复用输入的实验不包含原先 SfM 耗时。</p><div class="table-wrap"><table><thead><tr><th>选择</th><th>实验</th><th>路线</th><th>注册率</th><th>误差 px</th><th>PSNR dB</th><th>SSIM</th><th>耗时 s</th><th>产物 MB</th><th>评估分组</th></tr></thead><tbody id="runs"></tbody></table></div><p id="comparison-note" class="note"></p></section>
-<section id="detail" class="card" hidden><div class="title"><h2 id="detail-name"></h2><div><button id="open-folder">打开结果目录</button> <button id="open-viewer">用 Brush 查看</button></div></div><section id="point-section"><h2>三维点云</h2><div class="viewer-tools"><select id="cloud-kind"><option value="dense">稠密点云 / 当前点云</option><option value="sparse">稀疏点云</option></select><button id="cloud-reset">重置视角</button><button id="cloud-fit">显示全部范围</button><label>点大小 <input id="point-size" type="range" min="1" max="8" value="2"></label></div><p id="cloud-info" class="note">选择任务后加载点云</p><canvas id="point-canvas"></canvas><p class="note">拖动旋转 · 滚轮缩放 · Shift + 拖动平移。大点云最多抽样显示 30 万点，下载和保存的原始结果不变。</p></section><div id="metrics" class="metrics" style="margin-top:20px"></div><p id="detail-info" class="note"></p><div class="charts"><div><p>PSNR 随训练步数变化</p><canvas id="psnr" width="600" height="220"></canvas></div><div><p>SSIM 随训练步数变化</p><canvas id="ssim" width="600" height="220"></canvas></div></div><div id="warnings"></div><h2 style="margin-top:22px">评估渲染预览</h2><p class="note">以下来自 Brush 的留出视图渲染；真实输入照片仍保留在数据集目录中。</p><div id="previews" class="preview-grid"></div></section>
-</div></main>
-<dialog id="dialog"><h2>选择输入目录</h2><p id="folder-path"></p><div class="row"><button id="folder-root">项目根目录</button><button id="folder-up">上一级</button></div><div id="folders"></div><div class="row"><button id="folder-choose">选择当前目录</button><button id="folder-close">取消</button></div></dialog>
-<script src="/viewer.js"></script><script>
-const TOKEN='__TOKEN__';const $=id=>document.getElementById(id);let runs=[],current=null,folder='data',lastStatus='',polling=false,pointViewer=null,previewURLs=[];
-async function api(path,payload){const response=await fetch(path,payload===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-Local-Token':TOKEN},body:JSON.stringify(payload)});const data=await response.json();if(!response.ok)throw Error(data.error||'请求失败');return data}
-function message(text,error=false){$('message').textContent=text;$('message').className='message'+(error?' error':'');$('message').style.display='block'}
-function fmt(value,digits=2){return value===null||value===undefined?'—':typeof value==='number'?value.toFixed(digits):String(value)}
-function options(){const gs=$('method').value==='3dgs',mvs=$('method').value==='mvs';for(const item of $('input_type').options)item.disabled=!gs&&item.value==='dataset'||!gs&&!mvs&&item.value!=='images';if($('input_type').selectedOptions[0].disabled)$('input_type').value='images';$('gs-options').hidden=!gs;$('mvs-options').hidden=!mvs;$('photo-options').hidden=$('input_type').value!=='images'}
-$('method').onchange=options;$('input_type').onchange=options;options();
-$('form').onsubmit=async event=>{event.preventDefault();const payload={name:$('name').value,method:$('method').value,input_type:$('input_type').value,input:$('input').value,'steps':+$('steps').value,'max-image-size':+$('resolution').value,'threads':+$('threads').value,camera_model:$('camera').value,mvs_stage:$('mvs-stage').value,eval_split_every:+$('eval').value,with_viewer:$('viewer').checked,save_eval_images:$('save-images').checked,'max-splats':+$('max-splats').value,'export-every':+$('export-every').value,'eval-every':+$('eval-every').value,seed:+$('seed').value};$('start').disabled=true;try{const data=await api('/api/start',payload);message('任务已启动：'+data.output);await poll()}catch(error){message(error.message,true);$('start').disabled=false}};
-$('cancel').onclick=async()=>{try{await api('/api/cancel',{});message('已发送停止请求，正在保留已有结果。')}catch(error){message(error.message,true)}};
-async function loadRuns(){runs=await api('/api/runs');const selected=new Set([...document.querySelectorAll('.select-run:checked')].map(e=>e.value));$('runs').replaceChildren();for(const row of [...runs].reverse()){const tr=document.createElement('tr');const td=document.createElement('td');const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='select-run';checkbox.value=row.id;checkbox.checked=selected.has(row.id);td.append(checkbox);tr.append(td);const name=document.createElement('td');const button=document.createElement('button');button.className='name-button';button.textContent=row.name;button.onclick=()=>showDetail(row);name.append(button);tr.append(name);for(const value of [row.method,row.registration_ratio==null?'—':(row.registration_ratio*100).toFixed(1)+'%',fmt(row.reprojection_error_px,3),fmt(row.psnr_db),fmt(row.ssim,4),fmt(row.elapsed_seconds),fmt(row.artifact_bytes/1024**2),row.comparison_group||'—']){const cell=document.createElement('td');cell.textContent=value;tr.append(cell)}$('runs').append(tr)}if(!runs.length)$('runs').innerHTML='<tr><td colspan="10" class="empty">暂无已完成实验</td></tr>'}
-async function poll(){if(polling)return;polling=true;try{const data=await api('/api/job');const names={idle:'等待任务',running:'正在重建',completed:'任务完成',failed:'任务失败',cancelled:'任务已停止'};$('status').textContent=names[data.status]||data.status;$('start').disabled=data.status==='running';$('cancel').disabled=data.status!=='running';$('task-path').textContent=data.output||'选择一条路线，开始第一个实验。';if(data.progress){$('progress').value=data.progress.step/data.progress.total*100;$('status').textContent+=' · '+data.progress.step+'/'+data.progress.total}else if(data.status==='running')$('progress').removeAttribute('value');else $('progress').value=data.status==='completed'?100:0;$('stages').replaceChildren();for(const state of data.states||[]){const line=document.createElement('div');line.className='stage';line.textContent=[state.path,state.status,state.stage,fmt(state.elapsed)+' s',state.error].filter(Boolean).join(' · ');$('stages').append(line)}const log=$('log'),atEnd=log.scrollHeight-log.scrollTop-log.clientHeight<40;log.textContent=data.log||'暂无日志';if(atEnd)log.scrollTop=log.scrollHeight;if(data.status!==lastStatus){await loadRuns();lastStatus=data.status}}catch(error){$('status').textContent='连接中断';message(error.message,true)}finally{polling=false}}
-function chart(id,points,key){const canvas=$(id),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.font='14px system-ui';ctx.fillStyle='#9caec8';if(!points.length){ctx.fillText('暂无留出视图评估数据',35,100);return}const xs=points.map(p=>p.step),ys=points.map(p=>p[key]),xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(...ys),ymax=Math.max(...ys),xp=x=>55+(x-xmin)/(xmax-xmin||1)*(w-80),yp=y=>h-40-(y-ymin)/(ymax-ymin||1)*(h-70);ctx.strokeStyle='#2a3850';ctx.beginPath();ctx.moveTo(55,20);ctx.lineTo(55,h-40);ctx.lineTo(w-20,h-40);ctx.stroke();ctx.fillText(ymax.toFixed(3),5,25);ctx.fillText(ymin.toFixed(3),5,h-40);ctx.fillText(xmin,55,h-12);ctx.fillText(xmax,w-75,h-12);ctx.strokeStyle='#62dfc8';ctx.lineWidth=2;ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(xp(p.step),yp(p[key])):ctx.moveTo(xp(p.step),yp(p[key])));ctx.stroke();ctx.fillStyle='#62dfc8';points.forEach(p=>{ctx.beginPath();ctx.arc(xp(p.step),yp(p[key]),3,0,Math.PI*2);ctx.fill()})}
-async function showDetail(row){current=row;$('detail').hidden=false;$('detail-name').textContent=row.name;$('open-viewer').hidden=row.method!=='3dgs';$('metrics').replaceChildren();for(const [label,value] of [['稀疏点数',fmt(row.sparse_points,0)],['稠密点数',fmt(row.dense_points,0)],['高斯数',fmt(row.splats,0)],['三角面数',fmt(row.mesh_faces,0)],['训练 / 评估视图',fmt(row.train_views,0)+' / '+fmt(row.eval_views,0)],['最终训练步数',fmt(row.steps,0)]]){const box=document.createElement('div');box.className='metric';const text=document.createElement('span');text.textContent=label;const number=document.createElement('b');number.textContent=value;box.append(text,number);$('metrics').append(box)}$('detail-info').textContent='结果：'+row.path+' · 耗时范围：'+row.timing_scope+' · 最大边长：'+fmt(row.max_resolution,0)+' · 评估步数：'+fmt(row.evaluated_step,0);chart('psnr',row.evaluation_curve,'psnr_db');chart('ssim',row.evaluation_curve,'ssim');$('warnings').replaceChildren();for(const warning of row.warnings){const p=document.createElement('p');p.className='note';p.textContent=warning;$('warnings').append(p)}$('previews').replaceChildren();try{const previews=await api('/api/previews?run='+encodeURIComponent(row.id));if(current!==row)return;for(const path of previews.slice(-12)){const figure=document.createElement('div');const img=document.createElement('img');img.src='/api/image?path='+encodeURIComponent(path);img.loading='lazy';img.alt='评估渲染 '+path.split('/').pop();const caption=document.createElement('p');caption.className='note';caption.textContent=path.split('/').pop();figure.append(img,caption);$('previews').append(figure)}if(!previews.length)$('previews').textContent='暂无评估图片。下次训练可勾选“保存评估渲染图片”。'}catch(error){message(error.message,true)}}
-$('report').onclick=async()=>{const ids=[...document.querySelectorAll('.select-run:checked')].map(e=>e.value);try{const data=await api('/api/report',{runs:ids});message('已导出报告：'+data.path);const groups=new Set(runs.filter(r=>ids.includes(r.id)).map(r=>r.comparison_group));$('comparison-note').textContent=groups.size>1||groups.has(null)?'选中项包含不同评估条件或未评估任务，请按报告中的分组分别解释结果。':'选中项具备相同的已记录评估条件。'}catch(error){message(error.message,true)}};
-for(const [id,viewer] of [['open-folder',false],['open-viewer',true]])$(id).onclick=async()=>{try{await api('/api/open',{run:current.id,viewer})}catch(error){message(error.message,true)}};
-async function browse(path){const data=await api('/api/folders?path='+encodeURIComponent(path));folder=data.path;$('folder-path').textContent=folder||'项目根目录';$('folders').replaceChildren();for(const item of data.folders){const button=document.createElement('button');button.textContent='📁 '+item.name;button.onclick=()=>browse(item.path).catch(e=>message(e.message,true));$('folders').append(button)}}
-$('browse').onclick=async()=>{try{await browse('data');$('dialog').showModal()}catch(error){message(error.message,true)}};$('folder-root').onclick=()=>browse('');$('folder-up').onclick=()=>browse(folder.split('/').slice(0,-1).join('/'));$('folder-choose').onclick=()=>{$('input').value=folder;$('dialog').close()};$('folder-close').onclick=()=>$('dialog').close();
-async function loadCloud(){if(!current)return;$('point-section').hidden=current.method==='3dgs';if(current.method==='3dgs')return;try{if(!pointViewer)pointViewer=new PointViewer($('point-canvas'),$('cloud-info'));await pointViewer.load(current.id,$('cloud-kind').value)}catch(error){$('cloud-info').textContent=error.message}}
-const showOriginalDetail=showDetail;showDetail=async row=>{await showOriginalDetail(row);await loadCloud();$('detail').scrollIntoView({behavior:'smooth',block:'start'})};$('cloud-kind').onchange=loadCloud;$('cloud-reset').onclick=()=>pointViewer&&pointViewer.fit(false);$('cloud-fit').onclick=()=>pointViewer&&pointViewer.fit(true);$('point-size').oninput=()=>{if(pointViewer){pointViewer.size=+$('point-size').value;pointViewer.draw()}};
-$('photos').onchange=()=>{previewURLs.forEach(URL.revokeObjectURL);previewURLs=[];$('upload-preview').replaceChildren();const files=$('photos').files;$('upload-info').textContent='已选择 '+files.length+' 张照片';for(const file of [...files].slice(0,12)){const image=document.createElement('img');const url=URL.createObjectURL(file);previewURLs.push(url);image.src=url;image.alt=file.name;$('upload-preview').append(image)}};
-$('upload').onclick=async()=>{const files=[...$('photos').files];if(files.length<2)return message('至少选择两张照片。',true);if(new Set(files.map(f=>f.name)).size!==files.length)return message('文件名重复，请先修改图片名称。',true);$('upload').disabled=true;try{const batch=await api('/api/upload-new',{});let completed=0;for(const file of files){$('upload-info').textContent='正在上传 '+(completed+1)+' / '+files.length;const response=await fetch('/api/upload-file?id='+encodeURIComponent(batch.id)+'&name='+encodeURIComponent(file.name),{method:'POST',headers:{'X-Local-Token':TOKEN},body:file});const result=await response.json();if(!response.ok)throw Error(result.error);completed++;}$('input_type').value='images';$('input').value=batch.path;$('camera').value='SIMPLE_RADIAL';options();$('upload-info').textContent=completed+' 张照片已上传';message('照片已上传并设为输入，可以点击“开始重建”。')}catch(error){message(error.message,true)}finally{$('upload').disabled=false}};
-const pollOriginal=poll;poll=async()=>{const before=lastStatus;await pollOriginal();if(lastStatus==='completed'&&before!=='completed'){const state=await api('/api/job');const row=runs.find(r=>r.id===state.output);if(row)await showDetail(row)}};
-const reportSection=$('runs').closest('.card');reportSection.parentNode.insertBefore($('detail'),reportSection);
-poll();setInterval(poll,2000);setInterval(()=>loadRuns().catch(e=>message(e.message,true)),15000);
-</script></body></html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>重建工作台 · Recon Workbench</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/reconstruct"
+        ><span class="brand-mark">R</span>Recon Workbench</a
+      >
+      <nav class="nav">
+        <a data-page="reconstruct">重建工作台</a
+        ><a data-page="projects">项目记录</a
+        ><a data-page="experiments">实验对比</a>
+      </nav>
+      <a id="global-job" class="job-link" hidden></a>
+    </header>
+    <div class="contextbar">
+      <span class="inline-label">当前项目</span
+      ><select id="project-select" aria-label="当前项目"></select
+      ><button id="project-create">＋ 新建项目</button
+      ><span class="note">本地运行 · 数据保存在本机</span>
+    </div>
+    <div id="message" class="message" role="status" hidden></div>
+    <main class="page">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">RECONSTRUCTION</div>
+          <h1>从照片，重建三维场景</h1>
+          <p>准备图片、确认输入，在同一个工作区查看重建结果。</p>
+        </div>
+        <a class="button" data-page="projects">查看项目记录 ↗</a>
+      </div>
+      <div class="steps">
+        <button class="step active" data-step="images">
+          <span class="number">1</span>图片与筛选</button
+        ><button class="step" data-step="settings">
+          <span class="number">2</span>重建设置</button
+        ><button class="step" data-step="result">
+          <span class="number">3</span>运行与结果
+        </button>
+      </div>
+      <div class="workbench">
+        <aside class="panel controls">
+          <form id="form">
+            <div id="step-images">
+              <h2>准备输入</h2>
+              <p class="note">以下三种方式任选一种，不需要依次操作。</p>
+              <section
+                class="input-method"
+                aria-labelledby="input-upload-title"
+              >
+                <h3 id="input-upload-title">方式 1 · 上传新照片</h3>
+                <p class="note">
+                  照片在桌面、下载等位置时使用。选好文件后，点击上传才会保存。
+                </p>
+                <div class="upload-zone">
+                  <input
+                    id="photos"
+                    type="file"
+                    aria-labelledby="input-upload-title"
+                    accept="image/jpeg,image/png"
+                    multiple
+                  />
+                  <div id="upload-preview" class="upload-preview"></div>
+                  <button id="upload" type="button">上传选中的照片</button>
+                  <p id="upload-info" class="note">
+                    选择有重叠视角的 JPG / PNG 照片
+                  </p>
+                </div>
+              </section>
+              <section class="input-method" aria-labelledby="input-saved-title">
+                <h3 id="input-saved-title">方式 2 · 复用已保存输入</h3>
+                <p class="note">
+                  之前上传或登记过的图片集、已有结果，可直接再次使用。
+                </p>
+                <label for="saved-input">当前项目已保存的输入</label
+                ><select id="saved-input">
+                  <option value="">选择已保存的输入…</option>
+                </select>
+                <p id="saved-input-info" class="note" aria-live="polite"></p>
+              </section>
+              <section
+                class="input-method"
+                aria-labelledby="input-directory-title"
+              >
+                <h3 id="input-directory-title">方式 3 · 使用项目内目录</h3>
+                <p class="note">
+                  数据已放在本项目中时，填写或浏览目录即可，无需重复上传。
+                </p>
+                <label for="input_type">输入类型</label
+                ><select id="input_type">
+                  <option value="dataset">已整理的 Brush 数据集</option>
+                  <option value="sfm-output">已有 SfM 结果</option>
+                  <option value="images" selected>原始照片</option>
+                </select>
+                <label for="input">项目内的输入目录</label
+                ><input
+                  id="input"
+                  value=""
+                  placeholder="例如：data/my-photos"
+                  required
+                /><button type="button" id="browse" style="margin-top: 8px">
+                  浏览项目目录
+                </button>
+              </section>
+              <p class="note">
+                使用方式 1 或 2
+                后，输入类型和目录会自动填写，无需再手动设置。原始照片还需在质量检测区确认并保存筛选。
+              </p>
+              <button id="next-settings" class="primary" type="button">
+                下一步：重建设置 →
+              </button>
+            </div>
+            <div id="step-settings" hidden>
+              <h2>设置重建任务</h2>
+              <p class="note">基础参数在下方，其他参数可按需展开。</p>
+              <label for="name">实验名称</label
+              ><input id="name" value="scene" maxlength="60" required />
+              <label for="method">重建路线</label
+              ><select id="method">
+                <option value="3dgs">3DGS · 高斯场景</option>
+                <option value="mvs">MVS · 点云与网格</option>
+                <option value="sfm" selected>SfM · 稀疏重建</option>
+              </select>
+              <div class="row">
+                <div>
+                  <label for="resolution">最大边长</label
+                  ><input
+                    id="resolution"
+                    type="number"
+                    value="1200"
+                    min="64"
+                    max="8192"
+                  />
+                </div>
+                <div>
+                  <label for="threads">CPU 线程</label
+                  ><input
+                    id="threads"
+                    type="number"
+                    value="4"
+                    min="1"
+                    max="32"
+                  />
+                </div>
+              </div>
+              <div id="photo-options">
+                <label for="camera">相机模型</label
+                ><select id="camera">
+                  <option>PINHOLE</option>
+                  <option>SIMPLE_RADIAL</option>
+                  <option>OPENCV</option>
+                  <option>OPENCV_FISHEYE</option>
+                </select>
+                <p class="note">
+                  ETH3D 去畸变照片选 PINHOLE，普通照片通常选 SIMPLE_RADIAL。
+                </p>
+                <label for="camera-params">已知相机内参（可选）</label>
+                <input
+                  id="camera-params"
+                  maxlength="1024"
+                  placeholder="按所选模型顺序，用英文逗号分隔"
+                />
+                <p class="note" id="camera-params-help"></p>
+                <label class="check"
+                  ><input
+                    id="single-camera"
+                    type="checkbox"
+                  />所有照片共享内参</label
+                >
+                <p class="note">
+                  仅在镜头、焦距和图像尺寸一致时共享；内参使用原图尺寸，与“最大边长”无关。
+                </p>
+              </div>
+              <div id="gs-options">
+                <label for="steps">训练步数</label
+                ><input
+                  id="steps"
+                  type="number"
+                  value="5000"
+                  min="1"
+                  max="1000000"
+                /><label for="eval">评估划分</label
+                ><select id="eval">
+                  <option value="8">每 8 张留出一张</option>
+                  <option value="5">每 5 张留出一张</option>
+                  <option value="0">全部用于训练，不评估</option></select
+                ><label class="check"
+                  ><input
+                    id="save-images"
+                    type="checkbox"
+                    checked
+                  />保存评估渲染图片</label
+                ><label class="check"
+                  ><input id="viewer" type="checkbox" />训练时打开 Brush
+                  窗口</label
+                >
+              </div>
+              <div id="mvs-options" hidden>
+                <label for="mvs-stage">输出阶段</label
+                ><select id="mvs-stage">
+                  <option value="textured">纹理模型</option>
+                  <option value="mesh">表面网格</option>
+                  <option value="dense">稠密点云</option>
+                </select>
+              </div>
+              <details>
+                <summary>更多参数</summary>
+                <label for="max-splats">高斯数量上限</label
+                ><input
+                  id="max-splats"
+                  type="number"
+                  value="1000000"
+                  min="1"
+                  max="10000000"
+                />
+                <div class="row">
+                  <div>
+                    <label for="export-every">导出间隔</label
+                    ><input
+                      id="export-every"
+                      type="number"
+                      value="1000"
+                      min="1"
+                    />
+                  </div>
+                  <div>
+                    <label for="eval-every">评估间隔</label
+                    ><input
+                      id="eval-every"
+                      type="number"
+                      value="1000"
+                      min="1"
+                    />
+                  </div>
+                </div>
+                <label for="seed">随机种子</label
+                ><input id="seed" type="number" value="42" min="0" />
+              </details>
+              <button id="start" class="primary" type="submit">开始重建</button>
+              <p class="note">一次运行一个任务。结果自动保存到新的实验目录。</p>
+            </div>
+          </form>
+          <div id="step-result" hidden>
+            <div class="eyebrow" id="result-mode">CURRENT TASK</div>
+            <h2 id="task-name">任务结果</h2>
+            <div class="summary-list" id="task-summary"></div>
+            <div class="toolbar" style="margin-top: 20px">
+              <button id="new-task">新建重建</button
+              ><a class="button" data-page="projects">任务记录</a>
+            </div>
+            <details>
+              <summary>参数与实际输入</summary>
+              <pre id="task-parameters"></pre>
+            </details>
+          </div>
+        </aside>
+        <div class="workspace-main">
+          <section id="input-workspace" class="panel">
+            <section id="quality-section" class="card">
+              <h2>图片质量检测与筛选</h2>
+              <p class="note">
+                原始照片重建前，请先检测并保存筛选。提示可能受纹理和场景影响；相邻视角相似是正常现象，不自动删除原图。
+              </p>
+              <div class="viewer-tools">
+                <button id="quality-analyze" type="button">
+                  检测当前图片集</button
+                ><button id="quality-save" type="button" disabled>
+                  保存筛选
+                </button>
+              </div>
+              <details>
+                <summary>检测阈值</summary>
+                <div class="row">
+                  <div>
+                    <label for="quality-blur">模糊阈值（低于此值提示）</label
+                    ><input
+                      id="quality-blur"
+                      type="number"
+                      min="0"
+                      max="100000"
+                      step="1"
+                      value="60"
+                    />
+                  </div>
+                  <div>
+                    <label for="quality-near">相似哈希距离</label
+                    ><input
+                      id="quality-near"
+                      type="number"
+                      min="0"
+                      max="8"
+                      value="4"
+                    />
+                  </div>
+                </div>
+                <div class="row">
+                  <div>
+                    <label for="quality-dark">偏暗均值阈值</label
+                    ><input
+                      id="quality-dark"
+                      type="number"
+                      min="0"
+                      max="254"
+                      value="40"
+                    />
+                  </div>
+                  <div>
+                    <label for="quality-bright">偏亮均值阈值</label
+                    ><input
+                      id="quality-bright"
+                      type="number"
+                      min="1"
+                      max="255"
+                      value="215"
+                    />
+                  </div>
+                </div>
+                <p class="note">
+                  清晰度分数为最长边缩至 512 像素后的拉普拉斯方差；亮度范围
+                  0～255。调整阈值后需重新检测。
+                </p>
+              </details>
+              <p id="quality-summary" class="note">尚未检测原始照片。</p>
+              <div id="quality-results" hidden>
+                <div class="viewer-tools">
+                  <button id="quality-all" type="button">全选可解码图片</button
+                  ><button id="quality-dedup" type="button">排除完全重复</button
+                  ><button id="quality-none" type="button">取消全选</button
+                  ><label
+                    ><input
+                      id="quality-issues"
+                      type="checkbox"
+                    />仅看有提示的图片</label
+                  >
+                </div>
+                <p id="quality-selected" class="note"></p>
+                <div class="table-wrap" style="max-height: 460px">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>使用</th>
+                        <th>图片</th>
+                        <th>尺寸</th>
+                        <th>清晰度分数</th>
+                        <th>亮度均值</th>
+                        <th>暗 / 亮像素</th>
+                        <th>提示</th>
+                      </tr>
+                    </thead>
+                    <tbody id="quality-rows"></tbody>
+                  </table>
+                </div>
+                <p class="note">
+                  低清晰度分数也可能来自白墙等少纹理区域；哈希相似不代表视角冗余。请保留足够重叠的视角。筛选仅影响本次输入副本；表格可横向滚动。
+                </p>
+              </div>
+            </section>
+          </section>
+          <section id="settings-workspace" class="panel" hidden>
+            <div class="panel-head">
+              <h2>输入预览</h2>
+              <span id="settings-count" class="badge"></span>
+            </div>
+            <div class="panel-body">
+              <div id="saved-previews" class="gallery"></div>
+              <p id="settings-info" class="note"></p>
+              <div class="callout">
+                <strong id="method-title">选择适合的重建路线</strong>
+                <p id="method-help"></p>
+              </div>
+              <p class="note">
+                本机一次运行一个任务。确认输入与参数后点击左侧“开始重建”。
+              </p>
+            </div>
+          </section>
+          <section id="result-workspace" class="panel" hidden>
+            <div class="panel-head">
+              <div>
+                <h2 id="detail-name">运行与结果</h2>
+                <span id="status" class="status">等待任务</span>
+              </div>
+              <div class="toolbar">
+                <button id="cancel" class="danger" disabled>停止任务</button
+                ><button id="open-folder" hidden>打开结果目录</button
+                ><button id="open-viewer" hidden>用 Brush 查看</button>
+              </div>
+            </div>
+            <div id="execution-info" class="panel-body">
+              <p id="task-path" class="note"></p>
+              <progress id="progress" max="100" value="0"></progress>
+              <div id="stages"></div>
+              <p id="task-error" class="danger"></p>
+            </div>
+            <div id="point-section" hidden>
+              <div class="viewer-tools">
+                <select id="cloud-kind">
+                  <option value="dense">稠密 / 当前点云</option>
+                  <option value="sparse">稀疏点云</option></select
+                ><button id="cloud-reset">重置视角</button
+                ><button id="cloud-fit">全部范围</button
+                ><label
+                  >点大小
+                  <input id="point-size" type="range" min="1" max="8" value="2"
+                /></label>
+              </div>
+              <canvas id="point-canvas"></canvas>
+              <div class="viewer-caption">
+                <span id="cloud-info"></span> · 拖动旋转，滚轮缩放，Shift
+                拖动平移
+              </div>
+            </div>
+            <div id="result-empty" class="result-placeholder">
+              <div>
+                <h2>重建完成后在这里查看结果</h2>
+                <p>运行状态和日志会随任务更新。</p>
+              </div>
+            </div>
+            <div id="metrics" class="result-meta" hidden></div>
+            <div class="panel-body">
+              <details id="task-log">
+                <summary>运行日志与阶段信息</summary>
+                <pre id="log">暂无日志</pre>
+              </details>
+              <div id="previews" class="preview-grid"></div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+    <dialog id="dialog">
+      <h2>选择输入目录</h2>
+      <p id="folder-path"></p>
+      <div class="row">
+        <button id="folder-root">项目根目录</button
+        ><button id="folder-up">上一级</button>
+      </div>
+      <div id="folders"></div>
+      <div class="row">
+        <button id="folder-choose">选择当前目录</button
+        ><button id="folder-close">取消</button>
+      </div>
+    </dialog>
+    <dialog id="project-dialog" class="small-dialog">
+      <h2>新建项目</h2>
+      <form id="new-project-form">
+        <label for="new-project-name">项目名称</label
+        ><input
+          id="new-project-name"
+          maxlength="60"
+          required
+          placeholder="例如：校园建筑"
+        />
+        <div class="toolbar" style="margin-top: 20px">
+          <button class="primary" type="submit">创建项目</button
+          ><button id="project-close" type="button">取消</button>
+        </div>
+      </form>
+    </dialog>
+    <script>
+      window.LOCAL_TOKEN = "__TOKEN__";
+    </script>
+    <script src="/common.js"></script>
+    <script src="/viewer.js"></script>
+    <script src="/workbench.js"></script>
+    <script src="/quality.js"></script>
+  </body>
+</html>

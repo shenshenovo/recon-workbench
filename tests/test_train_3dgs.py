@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import train_3dgs as app
+from recon_workbench import train_3dgs as app
 
 
 def write_gaussian(path):

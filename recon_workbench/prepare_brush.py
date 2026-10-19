@@ -9,8 +9,8 @@ import struct
 import sys
 import tempfile
 
-from densify import load_source, positive_int
-from reconstruct import Pipeline, timestamp, write_json
+from .densify import load_source, positive_int
+from .reconstruct import Pipeline, timestamp, write_json
 
 
 def image_size(path):

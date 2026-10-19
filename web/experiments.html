@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>实验对比 · Recon Workbench</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/reconstruct"
+        ><span class="brand-mark">R</span>Recon Workbench</a
+      >
+      <nav class="nav">
+        <a data-page="reconstruct">重建工作台</a
+        ><a data-page="projects">项目记录</a
+        ><a data-page="experiments">实验对比</a>
+      </nav>
+      <a id="global-job" class="job-link" hidden></a>
+    </header>
+    <div class="contextbar">
+      <span class="inline-label">当前项目</span
+      ><select id="project-select" aria-label="当前项目"></select
+      ><button id="project-create">＋ 新建项目</button
+      ><span class="note">本地运行 · 数据保存在本机</span>
+    </div>
+    <div id="message" class="message" role="status" hidden></div>
+    <main class="page">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">EXPERIMENT ANALYSIS</div>
+          <h1>让每一次重建，都有据可比</h1>
+          <p>先选择场景和任务，再比较已记录的条件、结果和开销。</p>
+        </div>
+        <button id="report" class="primary">导出选中项 JSON / CSV</button>
+      </div>
+      <section class="panel">
+        <div class="panel-body">
+          <div class="filters">
+            <select id="compare-input" aria-label="图片集">
+              <option value="">全部图片集 / 来源</option></select
+            ><select id="compare-method">
+              <option value="">全部路线</option>
+              <option>sfm</option>
+              <option>mvs</option>
+              <option>3dgs</option></select
+            ><label class="check"
+              ><input id="show-smoke" type="checkbox" />显示 smoke /
+              集成测试任务</label
+            >
+          </div>
+          <p id="comparison-note" class="callout">
+            请选择要比较的已完成任务。缺失指标保留为空，不作为零分。
+          </p>
+          <div class="table-wrap">
+            <table class="comparison-table">
+              <thead>
+                <tr>
+                  <th>选择</th>
+                  <th>实验</th>
+                  <th>路线</th>
+                  <th>注册率</th>
+                  <th>误差 px</th>
+                  <th>PSNR dB</th>
+                  <th>SSIM</th>
+                  <th>耗时 s</th>
+                  <th>产物 MB</th>
+                  <th>评估分组</th>
+                </tr>
+              </thead>
+              <tbody id="runs"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <section
+        id="comparison-detail"
+        class="panel"
+        style="margin-top: 24px"
+        hidden
+      >
+        <div class="panel-head"><h2 id="comparison-title">所选实验</h2></div>
+        <div class="panel-body">
+          <div id="comparison-configs" class="table-wrap"></div>
+          <div id="curve-block" class="charts" style="margin-top: 24px">
+            <div>
+              <p class="chart-title">PSNR 随训练步数</p>
+              <canvas id="psnr" width="640" height="240"></canvas>
+            </div>
+            <div>
+              <p class="chart-title">SSIM 随训练步数</p>
+              <canvas id="ssim" width="640" height="240"></canvas>
+            </div>
+          </div>
+          <p id="curve-note" class="note">
+            曲线显示当前选中实验中的首条 3DGS
+            记录；仅同评估条件下解释图像指标。普通点云与高斯数量不直接排名。
+          </p>
+          <div id="comparison-warnings"></div>
+        </div>
+      </section>
+    </main>
+    <dialog id="project-dialog" class="small-dialog">
+      <h2>新建项目</h2>
+      <form id="new-project-form">
+        <label for="new-project-name">项目名称</label
+        ><input
+          id="new-project-name"
+          maxlength="60"
+          required
+          placeholder="例如：校园建筑"
+        />
+        <div class="toolbar" style="margin-top: 20px">
+          <button class="primary" type="submit">创建项目</button
+          ><button id="project-close" type="button">取消</button>
+        </div>
+      </form>
+    </dialog>
+    <script>
+      window.LOCAL_TOKEN = "__TOKEN__";
+    </script>
+    <script src="/common.js"></script>
+    <script src="/experiments.js"></script>
+  </body>
+</html>

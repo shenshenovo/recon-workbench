@@ -9,7 +9,7 @@ import math
 from pathlib import Path
 import re
 
-from reconstruct import write_json
+from .reconstruct import write_json
 
 
 def read_json(path, default=None):
@@ -68,7 +68,7 @@ def collect_run(folder):
                 candidates.append((int(match[1]), path))
         if not candidates:
             raise ValueError("缺少有效 summary.json：" + str(folder))
-        from train_3dgs import gaussian_ply_count
+        from .train_3dgs import gaussian_ply_count
         step, path = max(candidates)
         summary = {"method": "3dgs", "steps": step, "gaussian_ply": str(path),
                    "splats": gaussian_ply_count(path), "evaluation_enabled": False,

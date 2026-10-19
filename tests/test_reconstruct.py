@@ -5,13 +5,14 @@ import io
 import json
 from pathlib import Path
 import struct
+import sqlite3
 import sys
 import tempfile
 import unittest
 
-import reconstruct as app
-import densify
-import ply_compatible
+from recon_workbench import reconstruct as app
+from recon_workbench import densify
+from recon_workbench import ply_compatible
 
 
 class ReconstructionTests(unittest.TestCase):
@@ -57,6 +58,26 @@ class ReconstructionTests(unittest.TestCase):
             self.assertEqual(selected, "--" + prefix + ".use_gpu")
         with self.assertRaises(RuntimeError):
             app.select_option("--FeatureExtraction.use_gpu_extra", "FeatureExtraction.use_gpu")
+
+    def test_camera_prior_rejects_wrong_model_nonfinite_and_nonpositive_focal(self):
+        for value in ['1000,1000,1504,1000', 'nan,1000,1504,1000,0,0,0,0',
+                      '0,1000,1504,1000,0,0,0,0', '1000,1000,1504,1000,0,0,0,', 'abc']:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                app.validate_camera_params('OPENCV_FISHEYE', value)
+        self.assertIsNone(app.validate_camera_params('PINHOLE', ''))
+
+    def test_raw_matches_without_verified_geometry_report_camera_guidance(self):
+        database = self.root / 'database.db'
+        connection = sqlite3.connect(database)
+        connection.executescript('CREATE TABLE matches(rows INTEGER); INSERT INTO matches VALUES(500);'
+                                 'CREATE TABLE two_view_geometries(rows INTEGER); INSERT INTO two_view_geometries VALUES(0);')
+        connection.commit()
+        with self.assertRaisesRegex(RuntimeError, '已知相机内参'):
+            app.require_verified_matches(database, 'OPENCV_FISHEYE')
+        connection.execute('UPDATE two_view_geometries SET rows=100')
+        connection.commit()
+        connection.close()
+        app.require_verified_matches(database, 'OPENCV_FISHEYE')
 
     def test_select_largest_valid_component_not_first_directory(self):
         for name, images, points in [("0", 3, 100), ("1", 6, 70), ("2", 8, 0), ("3", 6, 90)]:

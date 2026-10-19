@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 import struct
 
-from ply_compatible import TYPES, read_exact
+from .ply_compatible import TYPES, read_exact
 
 
 def cloud_packet(path, limit=300000):

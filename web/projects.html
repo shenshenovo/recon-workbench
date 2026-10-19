@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>项目记录 · Recon Workbench</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/reconstruct"
+        ><span class="brand-mark">R</span>Recon Workbench</a
+      >
+      <nav class="nav">
+        <a data-page="reconstruct">重建工作台</a
+        ><a data-page="projects">项目记录</a
+        ><a data-page="experiments">实验对比</a>
+      </nav>
+      <a id="global-job" class="job-link" hidden></a>
+    </header>
+    <div class="contextbar">
+      <span class="inline-label">当前项目</span
+      ><select id="project-select" aria-label="当前项目"></select
+      ><button id="project-create">＋ 新建项目</button
+      ><span class="note">本地运行 · 数据保存在本机</span>
+    </div>
+    <div id="message" class="message" role="status" hidden></div>
+    <main class="page">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">PROJECT LIBRARY</div>
+          <h1 id="project-title">项目记录</h1>
+          <p id="project-info">管理图片集、历史任务与模型来源。</p>
+        </div>
+        <div class="toolbar">
+          <button id="project-rename">重命名项目</button
+          ><a class="button primary" data-page="reconstruct">＋ 开始重建</a>
+        </div>
+      </div>
+      <section class="panel">
+        <div class="tabbar">
+          <button class="active" data-tab="tasks">任务历史</button
+          ><button data-tab="images">图片集</button
+          ><button data-tab="models">模型记录</button>
+        </div>
+        <div id="tab-tasks" class="panel-body">
+          <div class="filters">
+            <input
+              id="task-search"
+              placeholder="搜索任务名称"
+              aria-label="搜索任务名称"
+            /><select id="task-status">
+              <option value="">全部状态</option>
+              <option value="completed">已完成</option>
+              <option value="running">运行中</option>
+              <option value="failed">失败</option>
+              <option value="cancelled">已取消</option>
+              <option value="interrupted">已中断</option></select
+            ><select id="task-method">
+              <option value="">全部路线</option>
+              <option>sfm</option>
+              <option>mvs</option>
+              <option>3dgs</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>任务</th>
+                  <th>路线</th>
+                  <th>状态</th>
+                  <th>记录时间</th>
+                  <th>耗时 s</th>
+                  <th>模型文件</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="project-tasks"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="tab-images" hidden>
+          <div id="project-inputs" class="image-list"></div>
+        </div>
+        <div id="tab-models" class="panel-body" hidden>
+          <p class="note">
+            按来源任务归集。纹理、材质等附件属于同一任务，不计作独立场景。
+          </p>
+          <div id="project-models"></div>
+        </div>
+      </section>
+    </main>
+    <dialog id="task-dialog">
+      <div class="title">
+        <h2 id="history-title"></h2>
+        <button id="history-close">关闭</button>
+      </div>
+      <p id="history-status"></p>
+      <p id="history-error" class="danger"></p>
+      <div class="toolbar">
+        <button id="history-view" class="primary">查看结果 ↗</button
+        ><button id="history-follow">查看运行状态 ↗</button>
+      </div>
+      <details open>
+        <summary>参数、实际输入与调用命令</summary>
+        <pre id="history-params"></pre>
+      </details>
+      <details>
+        <summary>阶段与运行日志</summary>
+        <pre id="history-log"></pre>
+      </details>
+    </dialog>
+    <dialog id="project-dialog" class="small-dialog">
+      <h2>新建项目</h2>
+      <form id="new-project-form">
+        <label for="new-project-name">项目名称</label
+        ><input
+          id="new-project-name"
+          maxlength="60"
+          required
+          placeholder="例如：校园建筑"
+        />
+        <div class="toolbar" style="margin-top: 20px">
+          <button class="primary" type="submit">创建项目</button
+          ><button id="project-close" type="button">取消</button>
+        </div>
+      </form>
+    </dialog>
+    <script>
+      window.LOCAL_TOKEN = "__TOKEN__";
+    </script>
+    <script src="/common.js"></script>
+    <script src="/projects.js"></script>
+  </body>
+</html>

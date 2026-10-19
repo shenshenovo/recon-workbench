@@ -3,12 +3,14 @@
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
 import signal
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -37,8 +39,40 @@ def positive_int(value):
     return number
 
 
+def validate_camera_params(model, value):
+    """Validate explicit COLMAP intrinsics without silently inventing a prior."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ValueError("相机内参必须是英文逗号分隔的数字。")
+    counts = {"SIMPLE_RADIAL": 4, "PINHOLE": 4, "OPENCV": 8, "OPENCV_FISHEYE": 8}
+    try:
+        numbers = [float(part.strip()) for part in value.split(',')]
+    except ValueError as error:
+        raise ValueError("相机内参必须是英文逗号分隔的数字。") from error
+    if model not in counts or len(numbers) != counts[model] or not all(math.isfinite(x) for x in numbers):
+        raise ValueError("{} 需要 {} 个有限数值内参。".format(model, counts.get(model, '?')))
+    focal = numbers[:1] if model == "SIMPLE_RADIAL" else numbers[:2]
+    if any(value <= 0 for value in focal):
+        raise ValueError("相机焦距必须大于 0。")
+    return ','.join(format(number, '.17g') for number in numbers)
+
+
+def require_verified_matches(database, camera_model):
+    connection = sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro', uri=True)
+    try:
+        verified = connection.execute('SELECT COUNT(*) FROM two_view_geometries WHERE rows > 0').fetchone()[0]
+    finally:
+        connection.close()
+    if not verified:
+        hint = ("鱼眼照片缺少 EXIF 焦距时，请在“已知相机内参”中提供可靠标定值（CLI: --camera-params），"
+                "并核对原图尺寸。" if camera_model == 'OPENCV_FISHEYE' else
+                "请检查照片的视角重叠、纹理和相机模型。")
+        raise RuntimeError("几何验证通过的图像对为 0，无法建立稀疏模型。" + hint + " 详细原因见 logs/02_matching.log。")
+
+
 def get_parser():
-    from densify import add_dense_options
+    from .densify import add_dense_options
     parser = argparse.ArgumentParser(
         description="使用 COLMAP 完成 CPU SfM，可继续调用 OpenMVS 生成稠密点云、网格和纹理。",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -58,6 +92,7 @@ def get_parser():
                         default="SIMPLE_RADIAL", help="相机模型")
     parser.add_argument("--single-camera", action="store_true",
                         help="所有图片共享内参；仅用于相同镜头、焦距、分辨率的照片")
+    parser.add_argument("--camera-params", help="已知内参，英文逗号分隔、对应原图像素尺寸；鱼眼为 fx,fy,cx,cy,k1,k2,k3,k4")
     parser.add_argument("--stage", choices=["sparse", "dense", "mesh", "textured"], default="sparse",
                         help="最终输出阶段；dense/mesh/textured 需要 OpenMVS")
     add_dense_options(parser)
@@ -101,6 +136,8 @@ def inspect_colmap(args):
     for name in ["image_list_path", "ImageReader.camera_model", "ImageReader.single_camera",
                  "SiftExtraction.max_num_features"]:
         select_option(extraction, name)
+    if getattr(args, "camera_params", None):
+        select_option(extraction, "ImageReader.camera_params")
     return executable, options
 
 
@@ -165,11 +202,11 @@ class Pipeline:
         self.state["elapsed_seconds"] = round(time.monotonic() - self.started, 3)
         write_json(self.output / "status.json", self.state)
 
-    def run(self, name, arguments, executable=None, env=None, terminal=False):
+    def run(self, name, arguments, executable=None, env=None, terminal=False, cwd=None):
         command = [executable or self.executable] + [str(value) for value in arguments]
         log_path = self.output / "logs" / (name + ".log")
         stage = {"name": name, "status": "running", "command": command, "log": str(log_path),
-                 "started_at": timestamp()}
+                 "started_at": timestamp(), "cwd": str(cwd or self.output)}
         self.state["stages"].append(stage)
         self.state["current_stage"] = name
         self.save()
@@ -186,7 +223,7 @@ class Pipeline:
                     import pty
                     master, slave = pty.openpty()
                 process = subprocess.Popen(command, stdout=slave if terminal else log, stderr=subprocess.STDOUT,
-                                           cwd=str(self.output), start_new_session=True, env=env)
+                                           cwd=str(cwd or self.output), start_new_session=True, env=env)
                 if terminal:
                     os.close(slave)
                     slave = None
@@ -247,6 +284,7 @@ class Pipeline:
 
 
 def reconstruct(args, executable, options, dense_tools=None):
+    camera_params = validate_camera_params(args.camera_model, getattr(args, "camera_params", None))
     images = args.images.expanduser().resolve()
     names = collect_images(images)
     output = (args.output or Path("outputs") / datetime.now().strftime("%Y%m%d_%H%M%S_%f")).expanduser().resolve()
@@ -271,17 +309,21 @@ def reconstruct(args, executable, options, dense_tools=None):
     try:
         # Save actual command help for reproducibility across COLMAP releases.
         (output / "colmap_help.txt").write_text(read_help(executable, "feature_extractor"), encoding="utf-8")
-        pipeline.run("01_features", ["feature_extractor", "--database_path", database,
+        extraction = ["feature_extractor", "--database_path", database,
                      "--image_path", images, "--image_list_path", image_list,
                      "--ImageReader.camera_model", args.camera_model,
                      "--ImageReader.single_camera", int(args.single_camera),
                      options["extract_gpu"], 0, options["extract_size"], args.max_image_size,
-                     options["extract_threads"], args.threads, "--SiftExtraction.max_num_features", args.max_features])
+                     options["extract_threads"], args.threads, "--SiftExtraction.max_num_features", args.max_features]
+        if camera_params:
+            extraction.extend(["--ImageReader.camera_params", camera_params])
+        pipeline.run("01_features", extraction)
         matching = [args.matcher + "_matcher", "--database_path", database,
                     options["match_gpu"], 0, options["match_threads"], args.threads]
         if args.matcher == "sequential":
             matching.extend([options["overlap"], args.overlap])
         pipeline.run("02_matching", matching)
+        require_verified_matches(database, args.camera_model)
         pipeline.run("03_mapper", ["mapper", "--database_path", database, "--image_path", images,
                      "--output_path", output / "sparse", options["mapper_threads"], args.threads])
         best, models = select_model(output / "sparse")
@@ -308,7 +350,7 @@ def reconstruct(args, executable, options, dense_tools=None):
         write_json(output / "summary.json", summary)
         pipeline.state["sparse_summary"] = summary.copy()
         if args.stage != "sparse":
-            from densify import run_dense
+            from .densify import run_dense
             if dense_tools is None:
                 raise RuntimeError("稠密阶段缺少 OpenMVS 环境检查结果。")
             summary.update(run_dense(pipeline, images, Path(best["path"]), args, dense_tools))
@@ -351,7 +393,7 @@ def main(argv=None):
         executable, options = inspect_colmap(args)
         dense_tools = None
         if args.stage != "sparse":
-            from densify import inspect_openmvs
+            from .densify import inspect_openmvs
             read_help(executable, "image_undistorter")
             dense_tools = inspect_openmvs(args)
         if args.check_env:

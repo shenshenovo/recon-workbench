@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import evaluate as app
+from recon_workbench import evaluate as app
 
 
 class EvaluationTests(unittest.TestCase):

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prepare_brush import safe_image_path, validate_dataset
+from recon_workbench.prepare_brush import safe_image_path, validate_dataset
 
 
 class BrushPreparationTests(unittest.TestCase):

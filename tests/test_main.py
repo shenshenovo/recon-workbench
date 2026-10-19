@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import main as app
+from recon_workbench import pipeline as app
 
 
 class RouteTests(unittest.TestCase):
@@ -31,6 +31,16 @@ class RouteTests(unittest.TestCase):
                      ('--method', 'mvs', '--dataset', '/tmp/dataset')]:
             with self.assertRaises(ValueError):
                 self.plan(*argv)
+
+    def test_photo_routes_preserve_explicit_fisheye_prior_and_shared_camera(self):
+        value = '1072.28,1068.69,1504,1000,0.031,0.005,0.0006,0.0001'
+        for method in ('sfm', 'mvs', '3dgs'):
+            command = self.plan('--method', method, '--images', '/tmp/photos',
+                                '--camera-model', 'OPENCV_FISHEYE', '--camera-params', value,
+                                '--single-camera')[0][1]
+            actual = command[command.index('--camera-params') + 1]
+            self.assertEqual([float(x) for x in actual.split(',')], [float(x) for x in value.split(',')])
+            self.assertIn('--single-camera', command)
 
     def test_dry_run_creates_no_output(self):
         with tempfile.TemporaryDirectory() as directory:

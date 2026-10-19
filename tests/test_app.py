@@ -2,7 +2,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-import app
+from recon_workbench import server as app
 
 
 class InterfaceTests(unittest.TestCase):
@@ -25,6 +25,17 @@ class InterfaceTests(unittest.TestCase):
         command = self.arguments({'input': 'data/brush/courtyard'})
         self.assertEqual(command[command.index('--dataset') + 1], str(app.ROOT / 'web'))
         self.assertIn('--eval-split-every', command)
+
+    def test_web_camera_prior_is_validated_and_forwarded(self):
+        payload = {'method': 'sfm', 'input_type': 'images', 'input': 'data/photos',
+                   'camera_model': 'OPENCV_FISHEYE', 'camera_params': '1072,1068,1504,1000,0,0,0,0',
+                   'single_camera': True}
+        command = self.arguments(payload)
+        self.assertEqual(command[command.index('--camera-params') + 1], payload['camera_params'])
+        self.assertIn('--single-camera', command)
+        for value in ['1072,1068,1504,1000', 'nan,1068,1504,1000,0,0,0,0', ['not a string']]:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.arguments(dict(payload, camera_params=value))
 
 
 if __name__ == '__main__':

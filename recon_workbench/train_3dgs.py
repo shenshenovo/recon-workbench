@@ -13,16 +13,17 @@ import sys
 import tempfile
 import time
 
-from densify import load_source
-from prepare_brush import validate_dataset
-from reconstruct import Pipeline, positive_int, timestamp, write_json
+from .densify import load_source
+from .prepare_brush import validate_dataset
+from .reconstruct import Pipeline, positive_int, timestamp, write_json
+from .paths import PROJECT_ROOT
 
 
 def inspect_brush(requested=None):
     if requested:
         executable = shutil.which(str(Path(requested).expanduser()))
     else:
-        local = Path(__file__).resolve().parent / ".tools/brush/brush_app"
+        local = PROJECT_ROOT / ".tools/brush/brush_app"
         executable = shutil.which(str(local)) or shutil.which("brush") or shutil.which("brush_app")
     if not executable:
         raise ValueError("找不到 Brush；请安装到 .tools/brush/brush_app，或指定 --brush 路径。")
@@ -164,9 +165,10 @@ def main(argv=None):
         (output / "logs/brush_help.txt").write_text(help_text, encoding="utf-8")
         pipeline = Pipeline(output, brush, {"task": "train_3dgs", "dataset": str(dataset), "steps": args.steps})
         if args.sfm_output:
-            pipeline.run("01_prepare", [Path(__file__).with_name("prepare_brush.py"),
+            pipeline.run("01_prepare", ["-m", "recon_workbench.prepare_brush",
                          "--sfm-output", original, "--output", dataset,
-                         "--max-image-size", args.max_resolution, "--colmap", colmap], executable=sys.executable)
+                         "--max-image-size", args.max_resolution, "--colmap", colmap], executable=sys.executable,
+                         cwd=PROJECT_ROOT)
         # Check actual binary model and final photos before GPU training.
         with tempfile.TemporaryDirectory(prefix="design3-train-check-") as temp:
             pipeline.run("02_validate", ["model_converter", "--input_path", dataset / "sparse/0",
@@ -179,7 +181,7 @@ def main(argv=None):
         if args.eval_split_every and data["registered_images"] < 3:
             raise ValueError("留出评估至少需要 3 张照片。")
         (output / "gaussians").mkdir()
-        from evaluate import make_split, parse_brush_metrics, read_log
+        from .evaluate import make_split, parse_brush_metrics, read_log
         split = make_split(dataset, data["image_names"], args.eval_split_every, args.max_resolution, args.seed)
         write_json(output / "split.json", split)
         print("训练：{} 张照片，{} 步；日志可在 logs/03_train.log 查看。".format(data["registered_images"], args.steps), flush=True)

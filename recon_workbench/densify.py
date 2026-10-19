@@ -13,6 +13,8 @@ import tempfile
 import time
 from datetime import datetime
 
+from .paths import PROJECT_ROOT
+
 
 def positive_int(value):
     number = int(value)
@@ -51,7 +53,7 @@ def inspect_openmvs(args):
         if args.openmvs_bin:
             executable = shutil.which(str(args.openmvs_bin.expanduser().resolve() / name))
         else:
-            root = Path(__file__).resolve().parent / ".tools" / "openmvs"
+            root = PROJECT_ROOT / ".tools" / "openmvs"
             candidates = sorted(root.rglob(name)) if root.is_dir() else []
             executable = next((str(path.resolve()) for path in candidates if path.is_file() and os.access(path, os.X_OK)),
                               shutil.which(name))
@@ -139,7 +141,7 @@ def run_dense(pipeline, images, model, args, tools):
                   "--number-views", 5, "--number-views-fuse", 2, "--crop-to-roi", 0]
     run("08_dense", "DensifyPointCloud", dense_args)
     counts = ply_counts(dense_ply)
-    from ply_compatible import convert
+    from .ply_compatible import convert
     compatible_ply = work / "dense_colmap.ply"
     convert(dense_ply, compatible_ply)
     if not dense_scene.is_file():
@@ -192,7 +194,7 @@ def load_source(folder):
 
 
 def main(argv=None):
-    from reconstruct import Pipeline, read_help, timestamp, write_json
+    from .reconstruct import Pipeline, read_help, timestamp, write_json
 
     parser = argparse.ArgumentParser(description="复用已有 SfM 结果，通过 OpenMVS 在 CPU 上生成稠密点云、网格或纹理模型。")
     parser.add_argument("--sfm-output", type=Path, help="已有 reconstruct.py 结果目录")

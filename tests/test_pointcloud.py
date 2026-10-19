@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import app
-from pointcloud import cloud_packet
+from recon_workbench import server as app
+from recon_workbench.pointcloud import cloud_packet
 
 
 class ViewerTests(unittest.TestCase):
