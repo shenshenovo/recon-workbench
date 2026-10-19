@@ -10,3 +10,7 @@ target/
 .env.*
 !.env.example
 *.log
+
+# Local application materials do not belong in the project repository.
+docs/RESUME_PROJECT.md
+.private/

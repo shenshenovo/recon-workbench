@@ -168,7 +168,7 @@ CLI 对应 `--camera-model`、`--camera-params`、`--single-camera`，统一入�
 
 JSON 字段：`original_points`, `display_points`, `min`, `max`, `fit_min`, `fit_max`, `sampled`。最多显示 30 万点，抽样只用于预览。主体聚焦使用坐标分位范围，不改变原始重建文件。
 
-这里只渲染普通点云。Gaussian PLY 含有高斯参数，不能复用这个接口假装实现 3DGS 渲染。后续网页高斯查看应另设渲染模块。
+这里只渲染普通点云。Gaussian PLY 含有高斯参数，不能用普通点云展示替代高斯渲染。后续网页高斯查看应另设渲染模块。
 
 ## 6. 评估约定
 

@@ -260,14 +260,14 @@ COLMAP 新版本还可能输出 `rigs.bin` / `frames.bin`，脚本会一起保�
 先训练 5,000 步并打开实时查看窗口：
 
 ```bash
-cd /Users/shenshen/Desktop/design3
+# 从仓库根目录执行
 
 ./.tools/brush/brush_app ./data/brush/courtyard \
   --total-steps 5000 \
   --max-resolution 1200 \
   --max-splats 1000000 \
   --export-every 1000 \
-  --export-path /Users/shenshen/Desktop/design3/outputs/brush-courtyard \
+  --export-path "$PWD/outputs/brush-courtyard" \
   --with-viewer
 ```
 
