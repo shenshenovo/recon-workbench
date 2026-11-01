@@ -53,7 +53,7 @@ models(task_id)         ─┘
 
 ## 3. 权限矩阵
 
-所有返回数据的接口都经过 `Access`，越权统一 403，参数不合法 400，未登录 401。
+所有返回数据的接口都经过 `Access`，越权统一 403，参数不合法 400，未登录 401，登录失败次数超限 429。
 
 | 接口 | 校验方式 | 越权结果 |
 | --- | --- | --- |
@@ -124,6 +124,7 @@ python -m unittest                        # 全量
 15 原图读取权限                  本人 200 · 他人 403
 16 他人复用上传批次              {"error": "上传批次不属于当前账号。"} 403
 17 质量检测接口                  本人 200 · 他人 403「图片集不存在或无权访问。」
+18 连续 8 次错误口令后第 9 次       {"error": "登录尝试次数过多，请 60 秒后再试。"} 429（口令正确也被拦）
 ```
 
 全量测试（含既有用例）：
@@ -148,7 +149,72 @@ FAILED (failures=2, errors=2, skipped=3)
 
 - 只在 `127.0.0.1` 提供服务，权限用于区分本机不同使用者，不是互联网多租户方案；仍然依赖 `Host` 校验与 `X-Local-Token` 防跨站请求。
 - 忘记密码没有自助重置，需要直接改 `data/workbench.sqlite3` 或删掉 `users` 行重新注册。
-- 登录限流按用户名在内存中计数（默认 8 次失败锁 60 秒），重启服务即清空。
+- 登录限流按用户名在内存中计数（默认 8 次失败锁 60 秒，返回 429），重启服务即清空；多进程部署时各自计数。
 - 注册开放：任何能访问本机页面的人都能新建账号，但只能看到自己的数据。
 - 输入目录浏览（`/api/folders`）与共享数据集不做归属划分；`data/` 下的历史输入目录对已登录用户可见目录名。
 - 模型下载是同步流式响应，没有断点续传（Range）与下载审计日志。
+
+## 9. 合并到 main
+
+当前分支 `smq_bk`，基于 `main@127c485`，三个提交：
+
+| 提交 | 内容 |
+| --- | --- |
+| `96a1d4f` | 主体：账号、权限、模型下载、前端与测试 |
+| `5e79ef2` | 上传接口先校验登录态 + 对应测试 |
+| `f341b7a` | `Access` 归属语义注释 |
+
+`git rev-list --left-right --count origin/main...smq_bk` 为 `0 3`，此刻可快进合并。队友提交后按下列流程再走一遍：
+
+```bash
+git fetch origin
+git rebase origin/main          # 只在自己分支上 rebase，不在 main 上 rebase
+python -m unittest tests.test_accounts
+python -m unittest               # Windows 上仍有 4 项既有的平台失败，见第 7 节
+git push -u origin smq_bk        # 开 PR 合入 main
+```
+
+### 冲突热点
+
+本分支改动集中在四个共享文件，正好也是其他人的交叉修改点。冲突时按"保留归属参数 + 复用 `Access`"的原则解，不要退回旧写法。
+
+| 文件 | 其他人的改动 | 本分支的改动 | 解决原则 |
+| --- | --- | --- | --- |
+| `recon_workbench/server.py` | 张鑫：任务队列、并行调度、阶段恢复 | 提出 `PAGES`/`ASSETS` 常量；新增 `prepare()`/`require_login()`/`job_visible()`；`read_route()`/`write_route()` 拆分；`download_model()`、`send_file()` | `Jobs.start(payload, owner=ANY_OWNER)` 的 owner 参数必须保留并透传给队列记录；新队列接口（取消/查询/恢复）同样要按 owner 过滤，否则任何账号都能看或停别人的任务 |
+| `recon_workbench/workspace.py` | 张鑫：tasks 字段与状态；林仪：quality 相关表 | `users`/`sessions` 建表、`projects.owner_id` 迁移、各查询的 `owner=` 形参 | 迁移代码必须保留（`PRAGMA table_info` + `ALTER TABLE`），新建查询若返回项目/图片集/任务/模型，一律接受 `owner=ANY_OWNER` 并下推到 SQL |
+| `docs/COLLABORATION.md` | 全组都改 | 模块表三行、HTTP 表五个接口、权限约定段 | 按小节合并；"账号与权限约定"整段不要删，新接口要补进同一张表 |
+| `web/index.html` | 周政炀：重建方法选择区 | 只改顶栏 | 顶栏 `#user-chip` / `#logout` 必须保留，`common.js` 依赖这两个 id |
+| `web/styles.css` | 周政炀、林仪都会追加样式 | 追加 `topbar-right`/`user-chip`/`auth-*`/`model-row` | 纯追加，冲突时两边都留 |
+
+无冲突的部分：`accounts.py`、`access.py`、`errors.py`、`web/login.*`、`tests/test_accounts.py`、`docs/ACCOUNTS.md` 都是新文件。
+
+### 合并后的必查项
+
+别人先合并时，rebase 后至少手工确认三件事（自动化测试已覆盖，但要确认没被静默改掉）：
+
+1. 未登录访问 `/reconstruct` 仍跳 `/login`，`/api/*` 仍返回 401。
+2. 第二个账号仍看不到第一个账号的项目、任务、模型（`/api/project`、`/api/task`、`/api/model` 都 403）。
+3. `/api/model` 仍返回 `Content-Disposition: attachment`，且路径不在任务目录内时报错。
+
+### PR 描述模板
+
+```text
+标题：实现账号、按账号隔离项目/图片/任务/模型，新增模型下载
+
+改动：
+- accounts.py 口令散列（PBKDF2）、会话令牌、凭据规则、登录限流（429）
+- access.py 会话解析 + Access 授权上下文，统一收口按归属的读操作
+- errors.py AccessDenied(403) / RateLimited(429)
+- workspace.py users/sessions 表、projects.owner_id 迁移、查询按 owner 过滤
+- server.py /api/auth/{register,login,logout,me}、401/302 拦截、/api/model 分块下载
+- web 登录页 + 顶栏用户区 + 模型下载入口
+
+验证：
+- 新增 tests/test_accounts.py 16 项，全部通过
+- 全量 python -m unittest：92 项，4 项为 Windows 既有平台失败（与本次无关）
+- 真实进程 18 步冒烟记录见 docs/ACCOUNTS.md 第 7 节
+
+影响：
+- 数据库自动迁移，已有项目与历史任务由首个注册账号接管，未注册时保持原行为
+- 新增依赖：无（仍只有 Pillow）
+```

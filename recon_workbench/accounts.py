@@ -11,6 +11,8 @@ import secrets
 import threading
 import time
 
+from .errors import RateLimited
+
 ITERATIONS = 210_000
 SALT_BYTES = 16
 SESSION_DAYS = 30
@@ -77,10 +79,10 @@ class Throttle:
         with self.guard:
             failures, blocked = self.records.get(key, ([], 0.0))
         if blocked > now:
-            raise ValueError('登录尝试次数过多，请 {} 秒后再试。'.format(int(blocked - now) + 1))
+            raise RateLimited('登录尝试次数过多，请 {} 秒后再试。'.format(int(blocked - now) + 1))
         failures = [stamp for stamp in failures if now - stamp < self.window]
         if len(failures) >= self.limit:
-            raise ValueError('登录尝试次数过多，请 {} 秒后再试。'.format(self.lock))
+            raise RateLimited('登录尝试次数过多，请 {} 秒后再试。'.format(self.lock))
         return True
 
     def fail(self, key):

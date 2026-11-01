@@ -135,7 +135,8 @@ async function globalJob() {
 }
 async function initShell(page, onProjectChange) {
   await currentUser();
-  $("logout").onclick = logout;
+  const quit = $("logout");
+  if (quit) quit.onclick = logout;
   const projects = await api("/api/projects");
   if (!projects.some((p) => p.id === window.activeProjectId))
     window.activeProjectId = projects.length ? projects[0].id : "default";

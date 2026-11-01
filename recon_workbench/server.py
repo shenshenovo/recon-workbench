@@ -22,7 +22,7 @@ from .workspace import ANY_OWNER, Workspace
 from .paths import PROJECT_ROOT
 from . import access
 from . import accounts
-from .errors import AccessDenied
+from .errors import AccessDenied, RateLimited
 from . import image_quality
 
 from . import evaluate
@@ -451,7 +451,7 @@ class Handler(BaseHTTPRequestHandler):
                 if url.path in PAGES and self.access.login_required:
                     return self.redirect(LOGIN_PAGE + "?next=" + quote(self.path, safe=""))
                 page = 'login.html' if url.path == LOGIN_PAGE else PAGES[url.path]
-                data = (ROOT / 'web' / page).read_text().replace("__TOKEN__", self.server.token)
+                data = (ROOT / 'web' / page).read_text(encoding='utf-8').replace("__TOKEN__", self.server.token)
                 return self.respond(data.encode(), content_type="text/html; charset=utf-8")
             if url.path in ASSETS:
                 return self.respond((ROOT / 'web' / url.path[1:]).read_bytes(), content_type='text/css; charset=utf-8' if url.path.endswith('.css') else 'text/javascript; charset=utf-8')
@@ -461,6 +461,8 @@ class Handler(BaseHTTPRequestHandler):
             if url.path.startswith('/api/') and self.require_login():
                 return None
             return self.read_route(url, parse_qs(url.query))
+        except RateLimited as error:
+            self.respond({"error": str(error)}, 429)
         except AccessDenied as error:
             self.respond({"error": str(error)}, 403)
         except (ValueError, OSError) as error:
@@ -594,6 +596,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.require_login():
                 return None
             return self.write_route(path, payload)
+        except RateLimited as error:
+            self.respond({"error": str(error)}, 429)
         except AccessDenied as error:
             self.respond({"error": str(error)}, 403)
         except (ValueError, OSError, KeyError, StopIteration, TypeError, SystemExit) as error:

@@ -2,7 +2,8 @@ const $ = (id) => document.getElementById(id);
 const query = new URLSearchParams(location.search);
 const next = () => {
   const value = query.get("next") || "";
-  return value.startsWith("/") && !value.startsWith("//") ? value : "/reconstruct";
+  const safe = value.startsWith("/") && !value.startsWith("//");
+  return safe && value !== "/login" ? value : "/reconstruct";
 };
 let mode = "login";
 

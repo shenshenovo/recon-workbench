@@ -317,6 +317,16 @@ preview.mkdir()
         self.assertIn('不存在', body['error'])
         self.assertEqual(self.request('/api/model?id=unknown', cookie=alice_cookie)[0], 400)
 
+    def test_repeated_failed_logins_return_429(self):
+        self.register('alice')
+        self.server.throttle = accounts.Throttle(limit=3)
+        for attempt in range(3):
+            self.assertEqual(self.request('/api/auth/login',
+                                          {'username': 'alice', 'password': 'wrong password'})[0], 401, attempt)
+        status, body, _ = self.request('/api/auth/login', {'username': 'alice', 'password': PASSWORDS})
+        self.assertEqual(status, 429)
+        self.assertIn('次数过多', body['error'])
+
     def test_login_page_and_assets_are_public(self):
         self.register('alice')
         status, page, _ = self.request('/login')

@@ -10,3 +10,10 @@ class AccessDenied(ValueError):
     继承 ValueError，是为了让任何未显式处理的调用路径仍落在既有的参数错误分支里，
     不会因为漏判而把越权请求变成 500。
     """
+
+
+class RateLimited(ValueError):
+    """短时间失败次数超过阈值；HTTP 层返回 429，前端据此提示"稍后再试"。
+
+    与 AccessDenied 分开，避免把"等一会儿"和"没有权限"混成同一个 4xx 语义。
+    """
