@@ -56,6 +56,21 @@ def job_arguments(payload, output):
         argv.extend(["--" + name, str(value)])
     argv.extend(["--camera-model", payload.get("camera_model", "PINHOLE"),
                  "--mvs-stage", payload.get("mvs_stage", "textured")])
+    if method == 'fast3r':
+        from .fast3r import DEFAULT_MODEL
+        for field, default, allowed in [('fast3r_size', 512, (224, 512)),
+                                        ('fast3r_precision', 'bf16', ('fp16', 'bf16', 'fp32'))]:
+            value = int(payload.get(field, default)) if field == 'fast3r_size' else payload.get(field, default)
+            if value not in allowed:
+                raise ValueError('Fast3R 参数无效：' + field)
+            argv.extend(['--' + field.replace('_', '-'), str(value)])
+        model = payload.get('fast3r_model', DEFAULT_MODEL)
+        if not isinstance(model, str) or not model.strip() or len(model) > 1024:
+            raise ValueError('Fast3R 模型名或目录无效。')
+        argv.extend(['--fast3r-model', model,
+                     '--fast3r-max-views', str(int(payload.get('fast3r_max_views', 8))),
+                     '--fast3r-max-points', str(int(payload.get('fast3r_max_points', 300000))),
+                     '--fast3r-confidence-percentile', str(float(payload.get('fast3r_confidence_percentile', 50)))])
     if input_type == "images":
         if payload.get("camera_params"):
             if not isinstance(payload["camera_params"], str) or len(payload["camera_params"]) > 1024:
@@ -128,6 +143,8 @@ class Jobs:
                     raise ValueError('请先检测图片质量并保存筛选结果，再开始重建。')
                 names = image_quality.validate_selection(quality['report'], quality['selection']['names'],
                                                          quality['selection']['fingerprint'])
+                if payload.get('method') == 'fast3r' and len(names) > int(payload.get('fast3r_max_views', 8)):
+                    raise ValueError('Fast3R 选中照片超过当前数量上限；8GB 显存请先保存 2～4 张筛选再启动。')
                 snapshot_path = ROOT / 'data/task_inputs' / output.name / 'images'
                 payload.update(source_input=payload['input'], input=str(snapshot_path.relative_to(ROOT)),
                                image_set_id=image_set['id'], selected_images=names,
@@ -210,7 +227,7 @@ class Jobs:
                                    "stage": state.get("current_stage"), "elapsed": state.get("elapsed_seconds"),
                                    "error": state.get("error")})
             log = tail_log(self.log)
-            for relative in ("3dgs/logs/03_train.log", "mvs/logs/08_dense.log", "sfm/logs/03_mapper.log"):
+            for relative in ("3dgs/logs/03_train.log", "mvs/logs/08_dense.log", "sfm/logs/03_mapper.log", "fast3r/logs/01_inference.log"):
                 candidate = self.output / relative
                 if candidate.exists():
                     log += "\n" + relative + "\n" + tail_log(candidate)

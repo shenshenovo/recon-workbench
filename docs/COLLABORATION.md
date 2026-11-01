@@ -13,6 +13,7 @@
 | MVS | `recon_workbench/densify.py` | 复用 SfM，调用 OpenMVS，输出点云/网格/纹理 |
 | 3DGS 数据准备 | `recon_workbench/prepare_brush.py` | 复用 SfM，去畸变/缩放并生成标准数据集 |
 | 3DGS 训练 | `recon_workbench/train_3dgs.py` | 调用 Brush，记录训练、划分、评估和高斯模型 |
+| 学习式点云 | `recon_workbench/fast3r.py` | 可选 CUDA 预训练推理、点图过滤与普通 PLY 导出 |
 | 评估与报告 | `recon_workbench/evaluate.py` | 统一读取结果，生成对比记录与 JSON/CSV |
 | 本地 HTTP 与任务管理 | `app.py` → `recon_workbench/server.py` | 上传、启动/停止、目录与结果接口 |
 | 项目元数据 | `recon_workbench/workspace.py` | SQLite 中保存项目、图片集、任务与模型关联 |
@@ -34,8 +35,9 @@ python3 main.py --method mvs --sfm-output 已有SfM目录 --output 新任务目�
 python3 main.py --method 3dgs --dataset Brush数据集目录 --output 新任务目录
 ```
 
-- `--method`：`sfm` / `mvs` / `3dgs`。
+- `--method`：`sfm` / `mvs` / `3dgs` / `fast3r`。
 - 输入三选一：`--images`、`--sfm-output`、`--dataset`。SfM 只接受照片；MVS 接受照片或已有 SfM；3DGS 三种输入均可。
+- Fast3R 只接受 `--images`，跳过 SfM，输出阶段位于 `fast3r/`。可选参数：`--fast3r-model`、`--fast3r-size`（224/512）、`--fast3r-max-views`（默认 8）、`--fast3r-precision`、`--fast3r-confidence-percentile`、`--fast3r-max-points`。HTTP 对应下划线字段，例如 `fast3r_size`。仍要求质量筛选确认，超出照片上限时拒绝启动，不自动减少输入。
 - `--output` 必须不存在，不能与输入目录重叠；省略则创建时间戳目录。
 - 输入照片和已有结果不改写。结果目录失败后保留，重跑创建新目录。
 - 退出码：`0` 成功，`1` 执行失败，`2` CLI 参数错误，`130` 中断。
@@ -67,6 +69,7 @@ python3 main.py --method 3dgs --dataset Brush数据集目录 --output 新任务�
 | SfM | `input_images`, `registered_images`, `registration_ratio`, `selected_model`, `points3D`, `pointcloud`, `mean_point_reprojection_error_px` |
 | MVS | SfM 字段，以及 `dense_pointcloud`, `dense_points`, `colmap_pointcloud`；网格阶段包含 `mesh`, `mesh_faces`；纹理阶段包含 `textured_mesh`, `texture_material`, `texture_images` |
 | 3DGS | `dataset`, `initial_points`, `steps`, `splats`, `gaussian_ply`, `exports`, `evaluation`, `split_file` |
+| Fast3R | `input_images`, `processed_views`, `dense_points`, `pointcloud`, `max_resolution`, `inference_seconds`, `peak_gpu_allocated_bytes`；无 SfM 注册或渲染质量指标 |
 
 统一入口额外加入 `method`、`task_output`、`stages`、`route_elapsed_seconds`。独立脚本的 `elapsed_seconds` 与整条路线耗时不完全相同。
 

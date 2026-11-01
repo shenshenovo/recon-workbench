@@ -11,11 +11,12 @@ import time
 
 from .reconstruct import Pipeline, positive_int, timestamp, write_json, validate_camera_params
 from .paths import PROJECT_ROOT
+from . import fast3r
 
 
 def get_parser():
-    parser = argparse.ArgumentParser(description="统一三维重建入口：sfm / mvs / 3dgs。")
-    parser.add_argument("--method", required=True, choices=("sfm", "mvs", "3dgs"))
+    parser = argparse.ArgumentParser(description="统一三维重建入口：sfm / mvs / 3dgs / fast3r。")
+    parser.add_argument("--method", required=True, choices=("sfm", "mvs", "3dgs", "fast3r"))
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--images", type=Path, help="从照片开始执行")
     inputs.add_argument("--sfm-output", type=Path, help="复用 SfM，仅用于 mvs / 3dgs")
@@ -40,6 +41,12 @@ def get_parser():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--with-viewer", action="store_true")
     parser.add_argument("--save-eval-images", action="store_true")
+    parser.add_argument('--fast3r-model', default=fast3r.DEFAULT_MODEL)
+    parser.add_argument('--fast3r-size', type=int, choices=(224, 512), default=512)
+    parser.add_argument('--fast3r-max-views', type=positive_int, default=8)
+    parser.add_argument('--fast3r-precision', choices=('fp16', 'bf16', 'fp32'), default='bf16')
+    parser.add_argument('--fast3r-confidence-percentile', type=float, default=50)
+    parser.add_argument('--fast3r-max-points', type=positive_int, default=300000)
     parser.add_argument("--dry-run", action="store_true", help="打印各阶段命令，不创建目录或执行")
     return parser
 
@@ -47,6 +54,18 @@ def get_parser():
 def build_plan(args, output):
     """Dispatch only; algorithm-specific execution stays in the existing scripts."""
     plan = []
+    if args.method == 'fast3r':
+        if not args.images:
+            raise ValueError('Fast3R 需要原始照片 --images，当前不接受 SfM/Brush 输入。')
+        fast3r.validate_options(argparse.Namespace(model=args.fast3r_model, max_views=args.fast3r_max_views,
+            max_points=args.fast3r_max_points, confidence_percentile=args.fast3r_confidence_percentile, seed=args.seed))
+        folder = output / 'fast3r'
+        command = ['-u', '-m', 'recon_workbench.fast3r', '--images', args.images, '--output', folder,
+                   '--model', args.fast3r_model, '--image-size', args.fast3r_size,
+                   '--max-views', args.fast3r_max_views, '--precision', args.fast3r_precision,
+                   '--confidence-percentile', args.fast3r_confidence_percentile,
+                   '--max-points', args.fast3r_max_points, '--seed', args.seed]
+        return [('01_fast3r', [str(value) for value in command], folder)]
     if args.method == "sfm" and not args.images:
         raise ValueError("sfm 路线需要 --images；已有 SfM 可直接选择 mvs 或 3dgs。")
     if args.dataset and args.method != "3dgs":

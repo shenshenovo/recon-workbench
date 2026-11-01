@@ -125,8 +125,9 @@
                 <option value="3dgs">3DGS · 高斯场景</option>
                 <option value="mvs">MVS · 点云与网格</option>
                 <option value="sfm" selected>SfM · 稀疏重建</option>
+                <option value="fast3r">Fast3R · 学习式点云（CUDA）</option>
               </select>
-              <div class="row">
+              <div class="row" id="geometry-settings">
                 <div>
                   <label for="resolution">最大边长</label
                   ><input
@@ -200,6 +201,63 @@
                   窗口</label
                 >
               </div>
+              <div id="fast3r-options" hidden>
+                <p class="note">
+                  使用 GPU 电脑上的独立 Fast3R 环境推理。8GB 显存先选 2～4
+                  张重叠照片；不运行 COLMAP，不需要填写相机内参。
+                </p>
+                <label for="fast3r-size">预处理尺寸</label>
+                <select id="fast3r-size">
+                  <option value="512">512 · 原模型常用尺寸</option>
+                  <option value="224">224 · 小尺寸试跑（中心裁剪）</option>
+                </select>
+                <label for="fast3r-max-views">照片数量上限</label>
+                <input
+                  id="fast3r-max-views"
+                  type="number"
+                  value="8"
+                  min="2"
+                  max="500"
+                />
+                <p class="note">
+                  超出上限会停止启动，不自动截取照片。调高上限不会增加显存。
+                </p>
+                <label for="fast3r-precision">推理精度</label>
+                <select id="fast3r-precision">
+                  <option value="bf16">BF16 · 混合精度</option>
+                  <option value="fp16">FP16 · 混合精度</option>
+                  <option value="fp32">FP32 · 外层全精度</option>
+                </select>
+                <label for="fast3r-confidence">低置信度过滤百分位</label>
+                <input
+                  id="fast3r-confidence"
+                  type="number"
+                  value="50"
+                  min="0"
+                  max="99.9"
+                  step="0.1"
+                />
+                <p class="note">
+                  逐视图过滤低于该百分位的预测点，不代表准确率。
+                </p>
+                <details>
+                  <summary>模型与导出设置</summary>
+                  <label for="fast3r-model">预训练模型 ID 或本机模型目录</label>
+                  <input
+                    id="fast3r-model"
+                    value="jedyang97/Fast3R_ViT_Large_512"
+                    maxlength="1024"
+                  />
+                  <label for="fast3r-max-points">导出点数上限</label>
+                  <input
+                    id="fast3r-max-points"
+                    type="number"
+                    value="300000"
+                    min="1"
+                    max="5000000"
+                  />
+                </details>
+              </div>
               <div id="mvs-options" hidden>
                 <label for="mvs-stage">输出阶段</label
                 ><select id="mvs-stage">
@@ -208,7 +266,7 @@
                   <option value="dense">稠密点云</option>
                 </select>
               </div>
-              <details>
+              <details id="training-advanced">
                 <summary>更多参数</summary>
                 <label for="max-splats">高斯数量上限</label
                 ><input

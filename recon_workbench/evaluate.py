@@ -130,7 +130,10 @@ def collect_run(folder):
             "elapsed_seconds": summary.get("route_elapsed_seconds", summary.get("elapsed_seconds")),
             "timing_scope": "unified_route" if "route_elapsed_seconds" in summary else "current_script",
             "source_sfm_seconds": summary.get("source_sfm_elapsed_seconds"),
-            "max_resolution": split.get("max_resolution", config.get("dense_max_image_size", config.get("max_image_size"))),
+            "max_resolution": split.get("max_resolution", summary.get('max_resolution', config.get("dense_max_image_size", config.get("max_image_size")))),
+            "processed_views": summary.get('processed_views'),
+            "inference_seconds": summary.get('inference_seconds'),
+            "peak_gpu_allocated_bytes": summary.get('peak_gpu_allocated_bytes'),
             "artifact_bytes": sum(item["bytes"] or 0 for item in artifacts), "artifacts": artifacts,
             "psnr_db": latest.get("psnr_db"), "ssim": latest.get("ssim"), "evaluated_step": latest.get("step"),
             "train_views": len(split["train_images"]) if split else None,
@@ -149,7 +152,8 @@ def discover_runs(root):
 CSV_FIELDS = ["name", "method", "input", "status", "input_images", "registered_images",
               "registration_ratio", "reprojection_error_px", "sparse_points", "dense_points", "mesh_faces",
               "splats", "steps", "elapsed_seconds", "timing_scope", "source_sfm_seconds", "max_resolution",
-              "artifact_bytes", "psnr_db", "ssim", "evaluated_step", "train_views", "eval_views", "comparison_group"]
+              "artifact_bytes", "psnr_db", "ssim", "evaluated_step", "train_views", "eval_views", "comparison_group",
+              "processed_views", "inference_seconds", "peak_gpu_allocated_bytes"]
 
 
 def export_report(folders, output):

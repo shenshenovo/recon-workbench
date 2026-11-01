@@ -284,6 +284,37 @@ output=pathlib.Path(sys.argv[sys.argv.index('--output')+1]); output.mkdir(parent
             self.assertEqual(self.request('/'+name)[0],200)
         self.assertEqual(self.request('/unknown.js')[0],404)
 
+    def test_fast3r_task_snapshot_result_and_cloud_survive_restart(self):
+        image_set = review_fixture(self.root, self.store)
+        (self.root / 'main.py').write_text('''import json, pathlib, struct, sys
+assert sys.argv[sys.argv.index('--method')+1]=='fast3r'
+assert sys.argv[sys.argv.index('--fast3r-max-views')+1]=='2'
+source=pathlib.Path(sys.argv[sys.argv.index('--images')+1])
+assert sorted(p.name for p in source.iterdir())==['a.png','b.png']
+output=pathlib.Path(sys.argv[sys.argv.index('--output')+1]); output.mkdir(parents=True)
+cloud=output/'pointcloud.ply'
+cloud.write_bytes(b'ply\\nformat binary_little_endian 1.0\\nelement vertex 1\\nproperty float x\\nproperty float y\\nproperty float z\\nproperty uchar red\\nproperty uchar green\\nproperty uchar blue\\nend_header\\n'+struct.pack('<fffBBB',1,2,3,255,0,0))
+(output/'summary.json').write_text(json.dumps({'method':'fast3r','input_images':2,'processed_views':2,'dense_points':1,'pointcloud':str(cloud),'max_resolution':512}))
+(output/'status.json').write_text(json.dumps({'status':'completed'}))
+''')
+        code, result = self.request('/api/start', {'method':'fast3r','image_set_id':image_set['id'],
+                                                  'fast3r_max_views':2})
+        self.assertEqual(code, 200)
+        self.server.jobs.worker.join(timeout=5)
+        self.stop_server()
+        self.start_server()
+        task = self.request('/api/task?id='+result['task_id'])[1]
+        self.assertEqual(task['status'], 'completed')
+        self.assertEqual(task['parameters']['selected_images'], ['a.png','b.png'])
+        rows = self.request('/api/runs?project_id=default')[1]
+        self.assertEqual(rows[0]['method'], 'fast3r')
+        self.assertIsNone(rows[0]['registration_ratio'])
+        code, packet = self.request('/api/cloud?run='+rows[0]['id'])
+        self.assertEqual(code, 200)
+        size = struct.unpack('<I', packet[:4])[0]
+        self.assertEqual(json.loads(packet[4:4+size])['original_points'], 1)
+        self.assertEqual(len(task['models']), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

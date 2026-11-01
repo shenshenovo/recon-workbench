@@ -22,7 +22,7 @@ class EntrypointTests(unittest.TestCase):
                     self.assertIn('usage:', result.stdout)
 
     def test_module_cli_imports(self):
-        modules = ('reconstruct', 'densify', 'prepare_brush', 'train_3dgs', 'evaluate', 'ply_compatible')
+        modules = ('reconstruct', 'densify', 'prepare_brush', 'train_3dgs', 'fast3r', 'evaluate', 'ply_compatible')
         for module in ['recon_workbench.' + name for name in modules] + ['scripts.make_quality_demo']:
             with self.subTest(module=module):
                 result = subprocess.run([sys.executable, '-m', module, '--help'], cwd=PROJECT_ROOT,

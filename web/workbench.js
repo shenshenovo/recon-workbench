@@ -28,6 +28,12 @@ const fieldIds = [
   "export-every",
   "eval-every",
   "seed",
+  "fast3r-size",
+  "fast3r-max-views",
+  "fast3r-precision",
+  "fast3r-confidence",
+  "fast3r-model",
+  "fast3r-max-points",
 ];
 const methodInfo = {
   sfm: [
@@ -41,6 +47,10 @@ const methodInfo = {
   "3dgs": [
     "3DGS · 高斯场景",
     "复用相机位姿并训练高斯表示，侧重场景的新视角渲染。结果使用 Brush 查看。",
+  ],
+  fast3r: [
+    "Fast3R · 预训练多视图推理",
+    "直接预测公共坐标系中的点图，导出置信度过滤后的彩色点云。需要 CUDA；当前不输出相机位姿，不直接衔接 MVS/3DGS。",
   ],
 };
 function options() {
@@ -63,14 +73,18 @@ function options() {
   for (const item of $("method").options)
     item.disabled =
       (type === "dataset" && item.value !== "3dgs") ||
-      (type === "sfm-output" && item.value === "sfm");
+      (type === "sfm-output" && ["sfm", "fast3r"].includes(item.value));
   if ($("method").selectedOptions[0].disabled)
     $("method").value = type === "dataset" ? "3dgs" : "mvs";
   const gs = $("method").value === "3dgs",
-    mvs = $("method").value === "mvs";
+    mvs = $("method").value === "mvs",
+    fast = $("method").value === "fast3r";
   $("gs-options").hidden = !gs;
   $("mvs-options").hidden = !mvs;
-  $("photo-options").hidden = type !== "images";
+  $("photo-options").hidden = type !== "images" || fast;
+  $("geometry-settings").hidden = fast;
+  $("fast3r-options").hidden = !fast;
+  $("training-advanced").hidden = fast;
   const info = methodInfo[$("method").value];
   $("method-title").textContent = info[0];
   $("method-help").textContent = info[1];
@@ -404,10 +418,17 @@ $("form").onsubmit = async (event) => {
     "export-every": +$("export-every").value,
     "eval-every": +$("eval-every").value,
     seed: +$("seed").value,
+    fast3r_size: +$("fast3r-size").value,
+    fast3r_max_views: +$("fast3r-max-views").value,
+    fast3r_precision: $("fast3r-precision").value,
+    fast3r_confidence_percentile: +$("fast3r-confidence").value,
+    fast3r_model: $("fast3r-model").value.trim(),
+    fast3r_max_points: +$("fast3r-max-points").value,
   };
   $("start").disabled = true;
   try {
     const started = await api("/api/start", payload);
+    $("message").hidden = true;
     saveDraft();
     followTaskId = started.task_id;
     viewingTask = null;
@@ -453,18 +474,40 @@ async function renderResult(task) {
   $("open-viewer").hidden = row.method !== "3dgs";
   $("metrics").hidden = false;
   $("metrics").replaceChildren();
-  for (const [name, value] of [
-    ["注册照片", row.registered_images],
-    ["稀疏点数", row.sparse_points],
-    ["稠密点数", row.dense_points],
-    ["高斯数", row.splats],
-  ]) {
+  const metrics =
+    row.method === "fast3r"
+      ? [
+          ["处理照片", row.processed_views],
+          ["导出点数", row.dense_points],
+          ["推理耗时 s", row.inference_seconds],
+          [
+            "峰值分配显存 MiB",
+            row.peak_gpu_allocated_bytes == null
+              ? null
+              : row.peak_gpu_allocated_bytes / 1024 ** 2,
+          ],
+        ]
+      : [
+          ["注册照片", row.registered_images],
+          ["稀疏点数", row.sparse_points],
+          ["稠密点数", row.dense_points],
+          ["高斯数", row.splats],
+        ];
+  $("cloud-kind").hidden = row.method === "fast3r";
+  for (const [name, value] of metrics) {
     const box = document.createElement("div");
     box.className = "metric";
     const label = document.createElement("span");
     label.textContent = name;
     const number = document.createElement("b");
-    number.textContent = fmt(value, 0);
+    number.textContent = fmt(
+      value,
+      row.method === "fast3r" && name.includes("耗时")
+        ? 3
+        : row.method === "fast3r" && name.includes("MiB")
+          ? 1
+          : 0,
+    );
     box.append(label, number);
     $("metrics").append(box);
   }

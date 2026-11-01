@@ -1,8 +1,10 @@
 # Recon Workbench｜多路线三维重建与可视化系统
 
-本地三维重建工作台：上传照片、检测质量并筛选，选择 SfM / MVS / 3DGS，查看任务进度、点云与实验结果。项目、图片集、任务和模型记录使用 SQLite 保存。
+本地三维重建工作台：上传照片、检测质量并筛选，选择 SfM / MVS / 3DGS / Fast3R，查看任务进度、点云与实验结果。项目、图片集、任务和模型记录使用 SQLite 保存。
 
-本项目负责流程调度、参数适配、任务管理、质量检测、结果展示和评估记录；底层 SfM、MVS、3DGS 分别由 COLMAP、OpenMVS、Brush 执行。当前主要在 Apple Silicon macOS 上验证，网页服务仅监听本机。
+本项目负责流程调度、参数适配、任务管理、质量检测、结果展示和评估记录；底层 SfM、MVS、3DGS 分别由 COLMAP、OpenMVS、Brush 执行。已在 Apple Silicon macOS 和 NVIDIA GPU 的 Linux/WSL 环境验证相关路线，网页服务仅监听本机。
+
+Fast3R 是可选 CUDA 推理路线，使用官方预训练模型导出普通彩色点云。已在 RTX 4060 Laptop 8GB 上完成真实推理及容量实验；512 尺寸建议从小样例开始，常用试验规模为 32～48 张。224 尺寸的 200 张虽完成推理，整体点云质量仍不理想。独立安装说明见 [Fast3R 指南](docs/FAST3R.md)，基础环境不需要安装 PyTorch。各路线结果和限制见 [GPU 实测记录](docs/GPU_EXPERIMENTS.md)。
 
 ## 快速启动
 
@@ -42,6 +44,7 @@ recon-workbench/
 │   ├── densify.py          # OpenMVS 稠密点云、网格、纹理
 │   ├── prepare_brush.py    # 3DGS 数据准备
 │   ├── train_3dgs.py       # Brush 训练适配
+│   ├── fast3r.py           # 可选 CUDA Fast3R 推理与点云导出
 │   ├── workspace.py        # 项目、图片集、任务和模型持久化
 │   ├── image_quality.py    # 图片检测、筛选和输入快照
 │   ├── evaluate.py         # 指标整理、对比报告
@@ -69,6 +72,7 @@ python app.py
 python main.py --method sfm --images data/自己的照片 --output outputs/新的任务目录
 python main.py --method mvs --sfm-output outputs/已有SfM目录 --output outputs/新的MVS目录
 python main.py --method 3dgs --dataset data/brush/自己的数据集 --output outputs/新的3DGS目录
+python main.py --method fast3r --images data/少量重叠照片 --output outputs/新的Fast3R目录
 ```
 
 单独执行算法、评估与工具时使用模块入口，避免直接运行包内文件：
@@ -96,6 +100,10 @@ python -m unittest tests.test_image_quality
 - [图片质量检测手动验收](docs/TESTING_QUALITY.md)：生成样例、筛选、重启恢复和实际输入校验。
 - [页面逻辑与测试扩展规划](docs/UI_PLAN.md)：三页职责、页面验收、正式实验与数据集候选。
 - [数据集选择与分层测试计划](docs/DATASET_TEST_PLAN.md)：三个真实场景、下载入口、数量阶梯、损坏与退化样例及结果记录。
+- [Fast3R GPU 运行指南](docs/FAST3R.md)：独立 CUDA 环境、8GB 显存的小样例和输出说明。
+- [GPU 实测记录](docs/GPU_EXPERIMENTS.md)：kitchen 200 张、Fast3R 容量与过滤、Train 301 张实测。
+- [Tanks and Temples 数据集](docs/TANKS_AND_TEMPLES.md)：301～410 张的三个完整场景与 Train 首轮结果。
+- [两台电脑同步](docs/TWO_COMPUTERS.md)：单人切换电脑、推送拉取及本机环境管理。
 
 协作时按模块建立分支，通过 Pull Request 合并。源码在 `recon_workbench/`，测试放入 `tests/`，接口变更同步更新 `docs/COLLABORATION.md`。GitHub 不包含照片、模型、数据库、外部工具或虚拟环境；组员需各自配置本机环境。
 

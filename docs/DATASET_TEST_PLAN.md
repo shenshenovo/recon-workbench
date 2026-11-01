@@ -182,3 +182,28 @@ python main.py --method sfm \
 结果：`outputs/dozer-fisheye-prior-check_20261019_173307/`。已登记到原项目，任务名 `dozer-50-fisheye-prior`，任务 ID `6421e85426d94f98a83f724c30141b62`；原失败任务与日志保留。重启网页服务并刷新后可使用新增内参字段，历史结果也可从项目记录直接查看。
 
 标定参数的用法参见 [COLMAP 官方 FAQ：Set known camera intrinsics](https://colmap.github.io/faq.html)。COLMAP 默认仍会在 bundle adjustment 中优化内参，当前接口没有把这些参数锁定。
+
+## 9. kitchen 数量阶梯与 Fast3R 接入准备
+
+2026-10-28 已准备以下照片子集，沿用第 7 节的确定性选图顺序，已有 100 张集合包含于 200 张集合，200 张包含于 300 张。所有副本 SHA-256 均与下载原图一致，未导入发布位姿；当前没有新增重建性能结论。
+
+| 图片数 | 原始照片输入目录 | 图片文件合计大小 |
+| --- | --- | ---: |
+| 100 | `data/benchmarks/nerfstudio/kitchen_100/images` | 约 11.2 MiB |
+| 200 | `data/benchmarks/nerfstudio/kitchen_200/images` | 约 22.1 MiB |
+| 300 | `data/benchmarks/nerfstudio/kitchen_300/images` | 约 33.5 MiB |
+
+原始尺寸均为 994×738。每组的 `subset.json` 保留名单、来源、选图索引与哈希；该规模指不同输入文件数量，不代表所有文件均已通过人工质量筛选。网页仍需检测并确认最终名单。
+
+Fast3R 作为独立的学习式多视图重建路线，已实现预训练推理适配、置信度过滤、彩色点云导出及工作台接口；接入准备之后已完成真实 CUDA 推理，结果见 [GPU 实测记录](GPU_EXPERIMENTS.md)。暂未衔接其他路线。[官方代码](https://github.com/facebookresearch/fast3r)提供预训练推理和逐视图点图输出接口，部署见 [Fast3R 指南](FAST3R.md)。
+
+部署前需核对 GPU 型号、显存、系统和连接方式，并在独立环境测试小规模输入。[官方项目页](https://fast3r-3d.github.io/)给出的单 A100 测试中，320 张 512×384 图像的峰值显存约为 41.90 GiB；这不是本项目实测，也不能推断普通显卡可直接处理 200～300 张。
+
+已确认待部署设备为 RTX 4060 8GB，因此首轮使用 2～4 张，再尝试 8 张，并记录实际显存占用。另备 `data/benchmarks/eth3d/courtyard_fast3r_004/images`，包含 4 张已有的相邻去畸变照片与来源哈希，不含模型预测结果。
+
+数量阶梯可先在已有 SfM 路线上验证，再在 Fast3R 环境可用后复用同一份名单。对比时分别记录预处理尺寸、推理/匹配/建图耗时、端到端耗时、峰值显存、过滤规则及产物；Fast3R 点图输出与 SfM 稀疏点云的点数不能直接用于质量排名。
+
+
+## 10. 当前 GPU 工作目录新增：Tanks and Temples
+
+2026-10-29 已下载官方完整照片包：Train 301 张、Barn 410 张、Meetingroom 371 张，全部 1920×1080。三包 MD5、ZIP CRC 和逐张解码均通过，每场景 SHA-256 无重复。随后 Train 完成 SfM → MVS，301/301 张注册，生成 6,692,989 个稠密点；Barn、Meetingroom 尚未重建。均未导入发布位姿。当前可直接使用的目录、用途与下载证据见 [Tanks and Temples 说明](TANKS_AND_TEMPLES.md)，运行摘要见 [GPU 实测记录](GPU_EXPERIMENTS.md)。
