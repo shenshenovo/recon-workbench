@@ -163,8 +163,10 @@ FAILED (failures=2, errors=2, skipped=3)
 | `96a1d4f` | 主体：账号、权限、模型下载、前端与测试 |
 | `5e79ef2` | 上传接口先校验登录态 + 对应测试 |
 | `f341b7a` | `Access` 归属语义注释 |
+| `b30e954` | review 修复：429 语义、页面编码、前端边界，补合并指南 |
+| `24a6c83` | 视觉重做：设计令牌、控件、顶栏、卡片、表格（仅 `web/styles.css`） |
 
-`git rev-list --left-right --count origin/main...smq_bk` 为 `0 3`，此刻可快进合并。队友提交后按下列流程再走一遍：
+`git rev-list --left-right --count origin/main...smq_bk` 为 `0 6`，此刻可快进合并。队友提交后按下列流程再走一遍：
 
 ```bash
 git fetch origin
@@ -184,7 +186,7 @@ git push -u origin smq_bk        # 开 PR 合入 main
 | `recon_workbench/workspace.py` | 张鑫：tasks 字段与状态；林仪：quality 相关表 | `users`/`sessions` 建表、`projects.owner_id` 迁移、各查询的 `owner=` 形参 | 迁移代码必须保留（`PRAGMA table_info` + `ALTER TABLE`），新建查询若返回项目/图片集/任务/模型，一律接受 `owner=ANY_OWNER` 并下推到 SQL |
 | `docs/COLLABORATION.md` | 全组都改 | 模块表三行、HTTP 表五个接口、权限约定段 | 按小节合并；"账号与权限约定"整段不要删，新接口要补进同一张表 |
 | `web/index.html` | 周政炀：重建方法选择区 | 只改顶栏 | 顶栏 `#user-chip` / `#logout` 必须保留，`common.js` 依赖这两个 id |
-| `web/styles.css` | 周政炀、林仪都会追加样式 | 追加 `topbar-right`/`user-chip`/`auth-*`/`model-row` | 纯追加，冲突时两边都留 |
+| `web/styles.css` | 周政炀、林仪都会追加样式 | 追加 `topbar-right`/`user-chip`/`auth-*`/`model-row`；另有一次整体视觉重做（设计令牌、控件、顶栏、卡片、表格） | 纯样式，不牵扯逻辑；冲突时两边都留，同一选择器取更具体的一版 |
 
 无冲突的部分：`accounts.py`、`access.py`、`errors.py`、`web/login.*`、`tests/test_accounts.py`、`docs/ACCOUNTS.md` 都是新文件。
 
