@@ -104,6 +104,7 @@ python -m unittest tests.test_image_quality
 - [GPU 实测记录](docs/GPU_EXPERIMENTS.md)：kitchen 200 张、Fast3R 容量与过滤、Train 301 张实测。
 - [Tanks and Temples 数据集](docs/TANKS_AND_TEMPLES.md)：301～410 张的三个完整场景与 Train 首轮结果。
 - [两台电脑同步](docs/TWO_COMPUTERS.md)：单人切换电脑、推送拉取及本机环境管理。
+- [后续任务分工](docs/TEAM_TASK_PLAN.md)：四名组员的任务和交付要求。
 
 协作时按模块建立分支，通过 Pull Request 合并。源码在 `recon_workbench/`，测试放入 `tests/`，接口变更同步更新 `docs/COLLABORATION.md`。GitHub 不包含照片、模型、数据库、外部工具或虚拟环境；组员需各自配置本机环境。
 
