@@ -163,13 +163,68 @@ p {
   color: var(--text);
   font-weight: 650;
 }
-.job-link {
+.topbar-right {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.job-link {
   font-size: 12px;
   background: var(--soft);
   padding: 5px 10px;
   border-radius: 20px;
   white-space: nowrap;
+}
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 3px 4px 3px 12px;
+  white-space: nowrap;
+}
+.user-chip button.quit {
+  padding: 3px 10px;
+  font-size: 12px;
+  border-radius: 16px;
+}
+.auth-body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.auth-card {
+  width: min(430px, 100%);
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 28px;
+  box-shadow: 0 12px 40px #102a2410;
+}
+.auth-brand {
+  font-weight: 750;
+  font-size: 18px;
+  letter-spacing: -0.5px;
+  margin-bottom: 10px;
+}
+.auth-tabs {
+  margin: 18px 0 4px;
+}
+.auth-submit {
+  width: 100%;
+  margin-top: 22px;
+}
+#auth-message {
+  margin: 12px 0 0;
+  font-size: 13px;
+  min-height: 1px;
 }
 .contextbar {
   display: flex;
@@ -786,4 +841,25 @@ dialog::backdrop {
 .image-item p,
 #project-models p {
   overflow-wrap: anywhere;
+}
+
+.model-list,
+#project-models {
+  display: grid;
+  gap: 6px;
+}
+.model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.model-row .button {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 12px;
 }

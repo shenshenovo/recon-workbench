@@ -16,12 +16,16 @@
 | 学习式点云 | `recon_workbench/fast3r.py` | 可选 CUDA 预训练推理、点图过滤与普通 PLY 导出 |
 | 评估与报告 | `recon_workbench/evaluate.py` | 统一读取结果，生成对比记录与 JSON/CSV |
 | 本地 HTTP 与任务管理 | `app.py` → `recon_workbench/server.py` | 上传、启动/停止、目录与结果接口 |
-| 项目元数据 | `recon_workbench/workspace.py` | SQLite 中保存项目、图片集、任务与模型关联 |
+| 项目元数据 | `recon_workbench/workspace.py` | SQLite 中保存项目、图片集、任务与模型关联；列表查询接受 owner 过滤，不判断权限 |
+| 账号基础件 | `recon_workbench/accounts.py` | 口令散列（PBKDF2-HMAC-SHA256）、会话令牌、用户名/密码规则、登录限流；不接触数据库与 HTTP |
+| 会话与授权 | `recon_workbench/access.py` | Cookie 会话、`Access` 授权上下文（当前账号 + 带归属的数据视图）、注册/登录/退出编排 |
+| 共用异常 | `recon_workbench/errors.py` | `AccessDenied`：越权在 HTTP 层映射为 403，其余参数错误仍为 400 |
 | 图片质量 | `recon_workbench/image_quality.py` | 解码、模糊/曝光/重复提示、校验筛选名单、复制不可变任务输入 |
 | 重建工作台 | `web/index.html`, `web/workbench.js` | 分步骤输入、设置、后台状态与点云结果 |
 | 项目记录界面 | `web/projects.html`, `web/projects.js` | 图片集、全部历史、任务详情与模型归集 |
 | 实验对比界面 | `web/experiments.html`, `web/experiments.js` | 按来源和路线筛选、条件核对、指标与报告 |
-| 共享界面 | `web/common.js`, `web/styles.css` | API、项目上下文、全局任务入口、导航与样式 |
+| 共享界面 | `web/common.js`, `web/styles.css` | API、项目上下文、全局任务入口、登录态、导航与样式 |
+| 登录页 | `web/login.html`, `web/login.js` | 注册/登录切换、首个账号接管提示、未登录跳转 |
 | 图片筛选界面 | `web/quality.js` | 检测阈值、报告与勾选、保存确认、启动前校验 |
 | 点云显示 | `recon_workbench/pointcloud.py`, `web/viewer.js` | PLY 解析、抽样、WebGL 交互显示 |
 
@@ -79,7 +83,7 @@ python3 main.py --method 3dgs --dataset Brush数据集目录 --output 新任务�
 
 服务默认 `http://127.0.0.1:8765`，仅本机访问。JSON 变更请求发送 `Content-Type: application/json` 与 `X-Local-Token`；token 由本次服务启动生成并注入页面，不写入仓库。失败响应为 `{"error":"说明"}`，常用状态码为 400/403/404。
 
-页面路由：`/` 和 `/reconstruct` 为工作台，`/projects` 为项目记录，`/experiments` 为实验对比。三页独立加载脚本；共享 `project` 查询参数与当前项目选择，历史结果通过 `/reconstruct?project=项目ID&task=任务ID` 打开，复用输入通过 `input=图片集ID` 打开。静态资源采用显式白名单，不将文件系统路径暴露为通用静态服务。改变服务端路由后需重启原服务再刷新页面。
+页面路由：`/` 和 `/reconstruct` 为工作台，`/projects` 为项目记录，`/experiments` 为实验对比，`/login` 为注册/登录页。数据库中已有账号时，未登录访问前三个页面会 302 到 `/login?next=…`，接口返回 401。三页独立加载脚本；共享 `project` 查询参数与当前项目选择，历史结果通过 `/reconstruct?project=项目ID&task=任务ID` 打开，复用输入通过 `input=图片集ID` 打开。静态资源采用显式白名单，不将文件系统路径暴露为通用静态服务。改变服务端路由后需重启原服务再刷新页面。
 
 工作台草稿按项目保存在当前标签 sessionStorage；包括输入、参数、未保存勾选及检测阈值。恢复未保存勾选时先核对报告指纹；仍需明确保存后才能启动。页面跳转不调用取消接口；所有页面通过 `/api/job` 提供运行任务的返回入口。
 
@@ -108,6 +112,11 @@ python3 main.py --method 3dgs --dataset Brush数据集目录 --output 新任务�
 | GET `/api/quality?image_set_id=...` | 原始图片集 ID | `image_set_id`, `supported`, `report`, `analyzed_at`, `selection` |
 | POST `/api/quality-analyze` | `image_set_id`, 可选 `thresholds` | 同上；同步执行，最多检测 500 张 |
 | POST `/api/image-selection` | `image_set_id`, `fingerprint`, `names` | 同上，保存确认后的名单；至少两张可解码图片 |
+| GET `/api/auth/me` | 无；不需要登录 | `user`（未登录为 null）、`auth_required`、`user_count` |
+| POST `/api/auth/register` | `username`（2～32 字）、`password`（8～128 字） | `user`、`claimed_projects`（首个账号接管的历史项目数）、`projects`；同时下发会话 Cookie |
+| POST `/api/auth/login` | `username`, `password` | `user`、`projects`；错误口令返回 401，连续失败由限流拦截 |
+| POST `/api/auth/logout` | `{}` | `ok`、`removed`；清除 Cookie |
+| GET `/api/model?id=...` | 模型记录 ID | 模型文件字节流，`Content-Disposition: attachment`；越权 403、文件缺失 400 |
 
 启动请求示例：
 
@@ -155,11 +164,13 @@ CLI 对应 `--camera-model`、`--camera-params`、`--single-camera`，统一入�
 
 网页任务使用 `data/task_inputs/任务目录名/images/` 中的独立副本，保留相对子目录与原始字节；同级 `selection.json` 保存来源、文件名单和哈希，`quality.json` 保存当次完整报告。任务 `parameters` 新增 `source_input`, `selected_images`, `quality_fingerprint`, `quality_manifest`，`input` 指向实际副本，`command` 也使用副本路径。不能以只记录前端勾选、却仍把整个原目录交给 COLMAP 的方式实现筛选。
 
-同一进程的检测、筛选保存、上传写入与输入复制使用锁避免内部状态竞争；工作区外部的文件修改则在复制时通过哈希检测。图片集和模型仍是本地资源关联，当前没有账号权限控制。质量接口需要 Pillow，组员先在虚拟环境中安装 `requirements.txt`，测试见 `TESTING_QUALITY.md`。
+同一进程的检测、筛选保存、上传写入与输入复制使用锁避免内部状态竞争；工作区外部的文件修改则在复制时通过哈希检测。图片集和模型的归属经项目继承，账号与权限控制见下一段。质量接口需要 Pillow，组员先在虚拟环境中安装 `requirements.txt`，测试见 `TESTING_QUALITY.md`。
 
 任务保存 `parameters`, `command`, `output`, `log`, `pid`, `returncode`, `error`, `stage`, `elapsed` 和时间字段。状态为 `starting` / `running` / `completed` / `failed` / `cancelled` / `interrupted`。后台线程在子进程退出后保存最终状态，不依赖浏览器轮询。正常 Ctrl+C 会停止当前任务并保存结果；异常关闭后，下次启动读取原始任务状态：已有完成/失败/取消结果据实恢复，其他未结束任务标记 `interrupted`。不会根据旧 PID 自动接管或终止进程；异常关闭后原进程可能仍在运行，需检查日志和系统进程，再创建新任务。
 
-`/api/job` 仍表示本次服务当前执行任务；历史详情使用 `/api/task`。`/api/runs` 是已完成任务的评估列表，全部状态的持久化历史使用 `/api/tasks`。模型记录保存 `task_id`, `kind`, `path`, `bytes`，只登记结果目录内实际存在的文件，纹理附件也包含在内；目前支持查看其来源任务，下载和账号权限将在后续阶段实现。
+`/api/job` 仍表示本次服务当前执行任务；历史详情使用 `/api/task`。`/api/runs` 是已完成任务的评估列表，全部状态的持久化历史使用 `/api/tasks`。模型记录保存 `task_id`, `kind`, `path`, `bytes`，只登记结果目录内实际存在的文件，纹理附件也包含在内；支持查看来源任务并通过 `/api/model` 下载。
+
+**账号与权限约定：** 归属只存 `projects.owner_id` 一列，图片集经项目、任务经项目、模型经任务继承；`owner_id` 为空表示账号体系建立前的记录。数据库中还没有账号时保持匿名单机行为，一旦有账号则除 `/api/auth/*` 与 `/login` 外都要求会话。首个注册账号一次性接管全部历史项目与任务，之后注册的账号各自独立。所有返回数据的接口都经 `access.Access` 收窄范围，越权返回 403、未登录 401。口令用 PBKDF2-HMAC-SHA256 加盐散列，会话令牌只以 SHA-256 摘要入库。设计、权限矩阵与运行记录见 [账号、权限与模型下载](ACCOUNTS.md)。
 
 ## 5. 点云二进制接口
 
@@ -180,6 +191,10 @@ JSON 字段：`original_points`, `display_points`, `min`, `max`, `fit_min`, `fit
 - 3DGS 保存 `split.json`（实际视图名单及条件）和 `evaluation.json`（逐步指标）。当前是已知位姿条件下的视图留出评估。
 - 比较 3DGS 时查看 `comparison_group` 和完整配置；分组只核对已记录条件，不自动控制所有变量。
 - 短训练和自动测试验证工程流程，不能写成正式重建质量结论。
+
+## 6.1 账号与权限
+
+实现细节、权限矩阵、历史数据接管规则与实测记录见 [账号、权限与模型下载](ACCOUNTS.md)。改动账号相关逻辑时必须同时更新该文档与 `tests/test_accounts.py`；`recon_workbench/access.py` 是唯一判断权限的位置，不要在路由里另写归属比较。
 
 ## 7. 协作与提交
 
