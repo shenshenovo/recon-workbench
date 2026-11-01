@@ -8,6 +8,7 @@ import threading
 import uuid
 
 from . import evaluate
+from .task_runtime.migrations import apply as apply_runtime_migrations
 
 
 def now():
@@ -54,6 +55,9 @@ class Workspace:
                     image_set_id TEXT PRIMARY KEY REFERENCES image_sets(id),
                     fingerprint TEXT NOT NULL, names TEXT NOT NULL, updated_at TEXT NOT NULL);
             ''')
+            # Additive runtime migrations run before the service can enqueue a
+            # task. Existing task, model and project rows remain untouched.
+            apply_runtime_migrations(db)
             db.execute('INSERT OR IGNORE INTO projects VALUES (?, ?, ?)',
                        ('default', '默认项目 / 历史实验', now()))
 
@@ -283,25 +287,31 @@ class Workspace:
                 fields['finished_at'] = state.get('finished_at') or now()
         self.update_task(task_id, **fields)
         if (status or task['status']) == 'completed':
-            try:
-                row = evaluate.collect_run(folder)
-            except (ValueError, OSError, KeyError):
-                return
             with self.connect() as db:
-                for artifact in row['artifacts']:
-                    try:
-                        path = self.relative(artifact['path'])
-                        resolved = self.root / path
-                        if folder.resolve() not in resolved.parents or not resolved.is_file():
-                            continue
-                    except ValueError:
-                        continue
-                    db.execute('INSERT OR IGNORE INTO models VALUES (?,?,?,?,?)',
-                               (uuid.uuid4().hex, task_id, artifact['kind'], path, artifact['bytes']))
+                self.register_models(db, task_id)
+
+    def register_models(self, db, task_id):
+        """在调用方事务内登记产物；运行时与终态一起提交。"""
+        task = db.execute('SELECT output FROM tasks WHERE id=?', (task_id,)).fetchone()
+        folder = self.root / task['output']
+        try:
+            row = evaluate.collect_run(folder)
+        except (ValueError, OSError, KeyError):
+            raise ValueError('无法读取完成任务的结果摘要。') from None
+        for artifact in row['artifacts']:
+            path = self.relative(artifact['path'])
+            resolved = self.root / path
+            if folder.resolve() not in resolved.parents or not resolved.is_file():
+                raise ValueError('模型产物缺失或越出任务目录。')
+            db.execute('INSERT OR IGNORE INTO models VALUES (?,?,?,?,?)',
+                       (uuid.uuid4().hex, task_id, artifact['kind'], path, artifact['bytes']))
 
     def recover(self):
         """Do not reconnect to or signal old PIDs; they may have been reused."""
         for task in self.tasks():
+            if task.get('current_attempt_id'):
+                # 运行时调度器先核查身份和进程树，再决定终态。
+                continue
             if task['status'] in ('starting', 'running'):
                 state = evaluate.read_json(self.root / task['output'] / 'status.json')
                 status = state.get('status')

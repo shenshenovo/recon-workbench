@@ -579,12 +579,12 @@ async function showTask(task, job) {
       .join(" · ");
     $("stages").append(p);
   }
-  const running = (job?.status || task.status) === "running";
-  $("cancel").disabled = !running || !job;
+  const running = ["preparing", "queued", "starting", "running", "cancelling"].includes(job?.status || task.status);
+  $("cancel").disabled = !running || !job || (job?.status === "cancelling");
   $("cancel").hidden = !running;
   $("execution-info").hidden = task.status === "completed";
   $("start").disabled = running;
-  $("progress").hidden = !running;
+  $("progress").hidden = !["starting", "running"].includes(job?.status || task.status);
   if (job?.progress)
     $("progress").value = (job.progress.step / job.progress.total) * 100;
   else if (running) $("progress").removeAttribute("value");
@@ -597,9 +597,9 @@ async function poll() {
   if (polling) return;
   polling = true;
   try {
-    const job = await api("/api/job");
+    const job = await api(followTaskId ? "/api/job?task_id=" + encodeURIComponent(followTaskId) : "/api/job");
     renderGlobalJob(job);
-    $("start").disabled = job.status === "running";
+    $("start").disabled = ["preparing", "queued", "starting", "running", "cancelling"].includes(job.status);
     if (followTaskId) {
       const task = await api("/api/task?id=" + followTaskId);
       await showTask(task, job.task_id === followTaskId ? job : null);
@@ -611,7 +611,7 @@ async function poll() {
   }
 }
 $("cancel").onclick = async () => {
-  await api("/api/cancel", {});
+  await api("/api/cancel", { task_id: followTaskId });
   message("已发送停止请求，已有结果会保留。");
   await poll();
 };

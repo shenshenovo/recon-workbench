@@ -135,7 +135,7 @@ CLI 对应 `--camera-model`、`--camera-params`、`--single-camera`，统一入�
 
 匹配命令退出成功后还会检查 `two_view_geometries` 是否有非空图像对；全部为空时报告几何验证失败并给出相机/重叠提示，不再直接进入 mapper。详细工具原因保留在 `logs/02_matching.log`。
 
-当前一个工作目录仅允许启动一个服务，同一时间运行一个任务，没有等待队列。同目录第二个服务即使换端口也会提示已有服务，避免两个实例互相改写任务状态。
+当前一个工作目录仅允许启动一个服务。PR1 提供持久化 FIFO 单 worker 队列：同一时间运行一个任务，后续任务保留为 `queued`，服务重启后继续显示原顺序；发现无法核查的旧 attempt 时暂停派发并显示 `reconciliation_required`。
 
 `data/workbench.sqlite3` 保存元数据（已被 `.gitignore` 排除），文件仍存放在原来的 `data/` 与 `outputs/`。SQLite 中资产路径是项目相对路径；原始参数、调用命令和算法 JSON 仍可能包含本机绝对路径。
 
@@ -157,9 +157,9 @@ CLI 对应 `--camera-model`、`--camera-params`、`--single-camera`，统一入�
 
 同一进程的检测、筛选保存、上传写入与输入复制使用锁避免内部状态竞争；工作区外部的文件修改则在复制时通过哈希检测。图片集和模型仍是本地资源关联，当前没有账号权限控制。质量接口需要 Pillow，组员先在虚拟环境中安装 `requirements.txt`，测试见 `TESTING_QUALITY.md`。
 
-任务保存 `parameters`, `command`, `output`, `log`, `pid`, `returncode`, `error`, `stage`, `elapsed` 和时间字段。状态为 `starting` / `running` / `completed` / `failed` / `cancelled` / `interrupted`。后台线程在子进程退出后保存最终状态，不依赖浏览器轮询。正常 Ctrl+C 会停止当前任务并保存结果；异常关闭后，下次启动读取原始任务状态：已有完成/失败/取消结果据实恢复，其他未结束任务标记 `interrupted`。不会根据旧 PID 自动接管或终止进程；异常关闭后原进程可能仍在运行，需检查日志和系统进程，再创建新任务。
+任务保存 `parameters`, `command`, `output`, `log`, `pid`, `returncode`, `error`, `stage`, `elapsed` 和时间字段；PR1 另保存 `queue_seq`, `idempotency_key`, `current_attempt_id` 与 `cancel_requested_at`，并在 `task_attempts` 保存每次执行身份。状态为 `preparing` / `queued` / `starting` / `running` / `cancelling` / `completed` / `failed` / `cancelled` / `interrupted`。后台 dispatcher 在子进程退出后保存最终状态，不依赖浏览器轮询。排队任务可按 `task_id` 取消；运行中取消先变 `cancelling`，经进程组清理确认后变 `cancelled`。同键同参数的 `/api/start` 重放返回原任务，同键不同参数返回 409。异常关闭不根据旧 PID 自动接管或终止进程；旧 attempt 无法核查时阻止新任务派发。
 
-`/api/job` 仍表示本次服务当前执行任务；历史详情使用 `/api/task`。`/api/runs` 是已完成任务的评估列表，全部状态的持久化历史使用 `/api/tasks`。模型记录保存 `task_id`, `kind`, `path`, `bytes`，只登记结果目录内实际存在的文件，纹理附件也包含在内；目前支持查看其来源任务，下载和账号权限将在后续阶段实现。
+`/api/job?task_id=...` 返回指定任务；无 ID 时兼容返回当前活动任务、队首任务或最近终态。`/api/queue` 返回 running/queued 和派发阻塞原因；历史详情使用 `/api/task`。`/api/runs` 是已完成任务的评估列表，全部状态的持久化历史使用 `/api/tasks`。模型记录保存 `task_id`, `kind`, `path`, `bytes`，只登记结果目录内实际存在的文件，纹理附件也包含在内；目前支持查看其来源任务，下载和账号权限将在后续阶段实现。
 
 ## 5. 点云二进制接口
 

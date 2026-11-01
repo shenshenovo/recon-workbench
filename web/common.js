@@ -6,8 +6,11 @@ window.activeProjectId =
   "default";
 window.selectedSetId = null;
 const taskStatus = {
+  preparing: "准备输入",
+  queued: "排队中",
   starting: "正在启动",
   running: "运行中",
+  cancelling: "正在取消",
   completed: "已完成",
   failed: "失败",
   cancelled: "已取消",
@@ -99,10 +102,11 @@ function openResult(task) {
 }
 function renderGlobalJob(job) {
   const link = $("global-job");
-  link.hidden = job.status !== "running";
-  if (job.status === "running" && job.task_id) {
+  const active = ["preparing", "queued", "starting", "running", "cancelling"].includes(job.status);
+  link.hidden = !active;
+  if (active && job.task_id) {
     link.href = routeURL("reconstruct", { task: job.task_id });
-    link.textContent = "● 任务运行中 · 返回查看";
+    link.textContent = "● " + (taskStatus[job.status] || job.status) + " · 返回查看";
   }
 }
 async function globalJob() {
