@@ -16,7 +16,13 @@
         ><a data-page="projects">项目记录</a
         ><a data-page="experiments">实验对比</a>
       </nav>
-      <a id="global-job" class="job-link" hidden></a>
+      <div class="topbar-right">
+        <a id="global-job" class="job-link" hidden></a
+        ><span id="user-chip" class="user-chip" hidden
+          ><span id="user-name"></span
+          ><button id="logout" class="quit" type="button">退出</button></span
+        >
+      </div>
     </header>
     <div class="contextbar">
       <span class="inline-label">当前项目</span
@@ -106,6 +112,10 @@
       <details open>
         <summary>参数、实际输入与调用命令</summary>
         <pre id="history-params"></pre>
+      </details>
+      <details open>
+        <summary>模型文件与下载</summary>
+        <div id="history-models" class="model-list"></div>
       </details>
       <details>
         <summary>阶段与运行日志</summary>

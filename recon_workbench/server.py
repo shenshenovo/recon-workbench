@@ -2,7 +2,6 @@
 """Loopback web UI for local reconstruction, image review and project records."""
 import argparse
 from contextlib import nullcontext
-import fcntl
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -15,18 +14,65 @@ import signal
 import subprocess
 import sys
 import threading
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 import webbrowser
 from .prepare_brush import image_size
 from .pointcloud import cloud_packet
-from .workspace import Workspace
+from .workspace import ANY_OWNER, Workspace
 from .paths import PROJECT_ROOT
+from . import access
+from . import accounts
+from .errors import AccessDenied, RateLimited
 from . import image_quality
 
 from . import evaluate
 from . import pipeline as routes
 
+try:
+    import fcntl
+except ImportError:  # Windows: 用 msvcrt 锁首字节，语义仍是"同目录只允许一个服务"
+    fcntl = None
+
 ROOT = PROJECT_ROOT
+
+PAGES = {'/': 'index.html', '/reconstruct': 'index.html',
+         '/projects': 'projects.html', '/experiments': 'experiments.html'}
+LOGIN_PAGE = '/login'
+ASSETS = {'/styles.css', '/common.js', '/workbench.js', '/projects.js',
+          '/quality.js', '/experiments.js', '/viewer.js', '/login.js'}
+PUBLIC_API = {'/api/auth/me'}
+PUBLIC_POST = {'/api/auth/login', '/api/auth/register'}
+
+
+def acquire_lock(stream):
+    """独占当前工作目录的服务锁；被占用时抛出 BlockingIOError。"""
+    if fcntl:
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    import msvcrt
+    stream.seek(0)
+    try:
+        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError as error:
+        raise BlockingIOError(error.errno or 0, str(error)) from None
+
+
+def interrupt(process, number=signal.SIGINT):
+    """POSIX 用进程组信号；Windows 没有 killpg，直接终止子进程。
+
+    Windows 上发 CTRL_BREAK_EVENT 需要子进程独立进程组，否则会打到本进程所在
+    控制台，连带结束服务本身；这里统一走 terminate。
+    """
+    if hasattr(os, 'killpg'):
+        try:
+            os.killpg(process.pid, number)
+        except ProcessLookupError:
+            pass
+        return
+    try:
+        process.terminate()
+    except OSError:
+        pass
 
 
 def project_path(value):
@@ -115,7 +161,7 @@ class Jobs:
         self.task_id = None
         self.worker = None
 
-    def start(self, payload):
+    def start(self, payload, owner=ANY_OWNER):
         with self.lock:
             if self.process and self.process.poll() is None:
                 raise ValueError("已有任务运行中，请等待完成或停止它。")
@@ -126,16 +172,17 @@ class Jobs:
             project_id = payload.get('project_id', 'default')
             image_set = None
             if self.store:
-                self.store.project(project_id)
+                self.store.project(project_id, owner)
                 if payload.get('image_set_id'):
-                    image_set = self.store.image_set(payload['image_set_id'])
+                    image_set = self.store.image_set(payload['image_set_id'], owner)
                     if image_set['project_id'] != project_id:
                         raise ValueError('图片集不属于所选项目。')
                     payload.update(input=image_set['path'], input_type=image_set['input_type'])
             output = ROOT / "outputs" / (label + "_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
             argv = job_arguments(payload, output)
             if self.store and image_set is None:
-                image_set = self.store.register_set(project_id, payload['input'], payload.get('input_type', 'dataset'))
+                image_set = self.store.register_set(project_id, payload['input'], payload.get('input_type', 'dataset'),
+                                                    owner=owner)
             quality = None
             if self.store and image_set['input_type'] == 'images':
                 quality = self.store.quality_state(image_set['id'])
@@ -197,21 +244,15 @@ class Jobs:
             try:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(self.process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                interrupt(self.process, signal.SIGTERM)
         if self.worker:
             self.worker.join(timeout=5)
 
     def cancel(self):
         with self.lock:
             if self.process and self.process.poll() is None:
-                try:
-                    os.killpg(self.process.pid, signal.SIGINT)
-                    self.cancel_requested = True
-                except ProcessLookupError:
-                    pass
+                interrupt(self.process)
+                self.cancel_requested = True
             return {"cancel_requested": self.cancel_requested}
 
     def snapshot(self):
@@ -247,25 +288,27 @@ class Uploads:
         self.sessions = {}
         self.lock = threading.Lock()
 
-    def create(self, project_id='default', name=None):
+    def create(self, project_id='default', name=None, owner=ANY_OWNER):
         if self.store:
-            self.store.project(project_id)
+            self.store.project(project_id, owner)
         key = secrets.token_hex(12)
         path = ROOT / 'data/uploads' / key
         path.mkdir(parents=True)
-        self.sessions[key] = {'path': path, 'files': [], 'bytes': 0}
+        self.sessions[key] = {'path': path, 'files': [], 'bytes': 0, 'owner': owner}
         if self.store:
-            image_set = self.store.register_set(project_id, path, name=name or '上传照片', images=[])
+            image_set = self.store.register_set(project_id, path, name=name or '上传照片', images=[], owner=owner)
             self.sessions[key]['image_set_id'] = image_set['id']
         else:
             image_set = None
         return {'id': key, 'path': str(path.relative_to(ROOT)), 'image_set_id': image_set['id'] if image_set else None}
 
-    def receive(self, key, name, stream, size):
+    def receive(self, key, name, stream, size, owner=ANY_OWNER):
         with self.lock, self.store.quality_lock if self.store else nullcontext():
             session = self.sessions.get(key)
             if not session:
-                raise ValueError('上传批次不存在，请重新选择图片。')
+                raise AccessDenied('上传批次不存在，请重新选择图片。')
+            if session.get('owner') is not ANY_OWNER and session['owner'] != owner:
+                raise AccessDenied('上传批次不属于当前账号。')
             if not name or Path(name).name != name or '\\' in name or name.startswith('.') or '\x00' in name:
                 raise ValueError('图片名称无效。')
             if Path(name).suffix.lower() not in ('.jpg', '.jpeg', '.png'):
@@ -298,7 +341,7 @@ class Uploads:
             return {'files': len(session['files']), 'path': str(session['path'].relative_to(ROOT))}
 
 
-def records(store=None, project_id=None):
+def records(store=None, project_id=None, owner=ANY_OWNER):
     rows = []
     for folder in evaluate.discover_runs(ROOT / "outputs"):
         try:
@@ -308,15 +351,15 @@ def records(store=None, project_id=None):
         except (ValueError, OSError, KeyError):
             continue
     if store:
-        tasks = {task['output']: task for task in store.tasks(project_id)}
+        tasks = {task['output']: task for task in store.tasks(project_id, owner)}
         rows = [row for row in rows if row['id'] in tasks and tasks[row['id']]['status'] == 'completed']
         for row in rows:
             row.update(task_id=tasks[row['id']]['id'], project_id=tasks[row['id']]['project_id'])
     return rows
 
 
-def task_detail(store, task_id):
-    task = store.task(task_id)
+def task_detail(store, task_id, owner=ANY_OWNER):
+    task = store.task(task_id, owner)
     folder = project_path(task['output'])
     task['states'] = []
     if folder.is_dir():
@@ -335,157 +378,280 @@ def task_detail(store, task_id):
 
 
 class Handler(BaseHTTPRequestHandler):
-    def respond(self, body, code=200, content_type="application/json; charset=utf-8"):
+    def respond(self, body, code=200, content_type="application/json; charset=utf-8", headers=None):
         data = json.dumps(body, ensure_ascii=False).encode() if not isinstance(body, bytes) else body
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
 
+    def redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def send_file(self, path, download_name=None):
+        """按块回写结果文件；只回写已登记且校验过的路径，不做目录列表。"""
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if download_name:
+            self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(download_name))
+        self.end_headers()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 ** 2), b""):
+                self.wfile.write(block)
+
     def valid_host(self):
         return self.headers.get("Host") in ("127.0.0.1:" + str(self.server.server_port), "localhost:" + str(self.server.server_port))
+
+    @property
+    def throttle(self):
+        if not hasattr(self.server, 'throttle'):
+            self.server.throttle = accounts.Throttle()
+        return self.server.throttle
+
+    def prepare(self):
+        """解析会话，得到本次请求的授权上下文。"""
+        self.access = access.Access(self.server.store, access.read_token(self.headers.get('Cookie')))
+
+    def require_login(self):
+        if self.access.login_required:
+            self.respond({"error": "请先登录。"}, 401)
+            return True
+        return False
+
+    def job_visible(self):
+        """当前进程只有一个任务槽位；别人的任务不返回状态，也不允许取消。"""
+        task_id = self.server.jobs.task_id
+        if not task_id:
+            return True
+        try:
+            self.access.task(task_id)
+        except (AccessDenied, ValueError):
+            return False
+        return True
 
     def do_GET(self):
         if not self.valid_host():
             return self.respond({"error": "无效 Host"}, 403)
         url = urlparse(self.path)
+        self.prepare()
         try:
-            pages = {'/': 'index.html', '/reconstruct': 'index.html', '/projects': 'projects.html', '/experiments': 'experiments.html'}
-            if url.path in pages:
-                data = (ROOT / 'web' / pages[url.path]).read_text().replace("__TOKEN__", self.server.token)
+            if url.path in PAGES or url.path == LOGIN_PAGE:
+                if url.path in PAGES and self.access.login_required:
+                    return self.redirect(LOGIN_PAGE + "?next=" + quote(self.path, safe=""))
+                page = 'login.html' if url.path == LOGIN_PAGE else PAGES[url.path]
+                data = (ROOT / 'web' / page).read_text(encoding='utf-8').replace("__TOKEN__", self.server.token)
                 return self.respond(data.encode(), content_type="text/html; charset=utf-8")
-            assets = {'/styles.css', '/common.js', '/workbench.js', '/projects.js', '/quality.js', '/experiments.js', '/viewer.js'}
-            if url.path in assets:
+            if url.path in ASSETS:
                 return self.respond((ROOT / 'web' / url.path[1:]).read_bytes(), content_type='text/css; charset=utf-8' if url.path.endswith('.css') else 'text/javascript; charset=utf-8')
-            query = parse_qs(url.query)
-            if url.path == '/api/projects':
-                return self.respond(self.server.store.projects())
-            if url.path == '/api/project':
-                project_id = query.get('id', ['default'])[0]
-                project = self.server.store.project(project_id)
-                return self.respond({**project, 'image_sets': self.server.store.image_sets(project_id),
-                                     'tasks': self.server.store.tasks(project_id),
-                                     'models': self.server.store.models(project_id=project_id)})
-            if url.path == '/api/tasks':
-                return self.respond(self.server.store.tasks(query.get('project_id', [None])[0]))
-            if url.path == '/api/quality':
-                return self.respond(self.server.store.quality_state(query.get('image_set_id', [''])[0]))
-            if url.path == '/api/task':
-                return self.respond(task_detail(self.server.store, query.get('id', [''])[0]))
-            if url.path == '/api/source-image':
-                image_set = self.server.store.image_set(query.get('set', [''])[0])
-                image = next((image for image in image_set['images'] if image['name'] == query.get('name', [''])[0]), None)
-                if not image:
-                    raise ValueError('图片不在此图片集中。')
-                path = project_path(image['path'])
-                return self.respond(path.read_bytes(), content_type=mimetypes.guess_type(path.name)[0])
-            if url.path == "/api/job":
-                return self.respond(self.server.jobs.snapshot())
-            if url.path == "/api/runs":
-                return self.respond(records(self.server.store, query.get('project_id', [None])[0]))
-            if url.path == '/viewer.js':
-                return self.respond((ROOT / 'web/viewer.js').read_bytes(), content_type='text/javascript; charset=utf-8')
-            if url.path == '/api/cloud':
-                query = parse_qs(url.query)
-                row = next((row for row in records(self.server.store) if row['id'] == query.get('run', [''])[0]), None)
-                if not row:
-                    raise ValueError('未知任务。')
-                kinds = ('sparse_pointcloud', 'pointcloud') if query.get('kind', ['dense'])[0] == 'sparse' else ('colmap_pointcloud', 'dense_pointcloud', 'pointcloud')
-                artifact = next((item for kind in kinds for item in row['artifacts'] if item['kind'] == kind and item['path'].endswith('.ply')), None)
-                if not artifact or row['method'] == '3dgs':
-                    raise ValueError('该任务没有普通点云；3DGS 高斯模型仍使用 Brush 查看。')
-                return self.respond(cloud_packet(project_path(artifact['path'])), content_type='application/octet-stream')
-            if url.path == "/api/folders":
-                path = project_path(parse_qs(url.query).get("path", ["data"])[0])
-                folders = []
-                for child in sorted(path.iterdir()):
-                    if child.is_dir() and not child.name.startswith('.'):
-                        try:
-                            relative = child.resolve().relative_to(ROOT)
-                        except ValueError:
-                            continue
-                        folders.append({"name": child.name, "path": str(relative)})
-                return self.respond({"path": str(path.relative_to(ROOT)), "folders": folders})
-            if url.path == "/api/image":
-                path = project_path(parse_qs(url.query).get("path", [""])[0])
-                if path.suffix.lower() not in (".jpg", ".jpeg", ".png"):
-                    raise ValueError("只提供图片预览。")
-                if not (ROOT / "outputs") in path.parents:
-                    raise ValueError("仅提供结果目录内的图片。")
-                return self.respond(path.read_bytes(), content_type=mimetypes.guess_type(path.name)[0])
-            if url.path == "/api/previews":
-                folder = project_path(parse_qs(url.query).get("run", [""])[0])
-                if folder not in evaluate.discover_runs(ROOT / "outputs"):
-                    raise ValueError("未知任务。")
-                images = [str(path.relative_to(ROOT)) for path in folder.rglob('*')
-                          if path.suffix.lower() in (".jpg", ".png", ".jpeg") and 'gaussians' in path.parts]
-                return self.respond(images[:100])
-            return self.respond({"error": "Not found"}, 404)
+            if url.path == '/api/auth/me':
+                return self.respond({"user": self.access.user, "auth_required": self.access.accounts_enabled,
+                                     "user_count": self.access.user_count})
+            if url.path.startswith('/api/') and self.require_login():
+                return None
+            return self.read_route(url, parse_qs(url.query))
+        except RateLimited as error:
+            self.respond({"error": str(error)}, 429)
+        except AccessDenied as error:
+            self.respond({"error": str(error)}, 403)
         except (ValueError, OSError) as error:
             self.respond({"error": str(error)}, 400)
+
+    def read_route(self, url, query):
+        if url.path == '/api/projects':
+            return self.respond(self.access.projects())
+        if url.path == '/api/project':
+            project_id = query.get('id', ['default'])[0]
+            return self.respond({**self.access.project(project_id),
+                                 'image_sets': self.access.image_sets(project_id),
+                                 'tasks': self.access.tasks(project_id),
+                                 'models': self.access.models(project_id=project_id)})
+        if url.path == '/api/tasks':
+            return self.respond(self.access.tasks(query.get('project_id', [None])[0]))
+        if url.path == '/api/quality':
+            return self.respond(self.access.quality(query.get('image_set_id', [''])[0]))
+        if url.path == '/api/task':
+            return self.respond(task_detail(self.server.store, query.get('id', [''])[0], self.access.owner))
+        if url.path == '/api/source-image':
+            image_set = self.access.image_set(query.get('set', [''])[0])
+            image = next((image for image in image_set['images'] if image['name'] == query.get('name', [''])[0]), None)
+            if not image:
+                raise ValueError('图片不在此图片集中。')
+            path = project_path(image['path'])
+            return self.respond(path.read_bytes(), content_type=mimetypes.guess_type(path.name)[0])
+        if url.path == "/api/job":
+            return self.respond(self.server.jobs.snapshot() if self.job_visible()
+                                else {"status": "idle", "log": "", "states": []})
+        if url.path == "/api/runs":
+            return self.respond(records(self.server.store, query.get('project_id', [None])[0], self.access.owner))
+        if url.path == '/api/cloud':
+            row = next((row for row in records(self.server.store, None, self.access.owner)
+                        if row['id'] == query.get('run', [''])[0]), None)
+            if not row:
+                raise ValueError('未知任务。')
+            kinds = ('sparse_pointcloud', 'pointcloud') if query.get('kind', ['dense'])[0] == 'sparse' else ('colmap_pointcloud', 'dense_pointcloud', 'pointcloud')
+            artifact = next((item for kind in kinds for item in row['artifacts'] if item['kind'] == kind and item['path'].endswith('.ply')), None)
+            if not artifact or row['method'] == '3dgs':
+                raise ValueError('该任务没有普通点云；3DGS 高斯模型仍使用 Brush 查看。')
+            return self.respond(cloud_packet(project_path(artifact['path'])), content_type='application/octet-stream')
+        if url.path == '/api/model':
+            return self.download_model(query.get('id', [''])[0])
+        if url.path == "/api/folders":
+            path = project_path(query.get("path", ["data"])[0])
+            folders = []
+            for child in sorted(path.iterdir()):
+                if child.is_dir() and not child.name.startswith('.'):
+                    try:
+                        relative = child.resolve().relative_to(ROOT)
+                    except ValueError:
+                        continue
+                    folders.append({"name": child.name, "path": str(relative)})
+            return self.respond({"path": str(path.relative_to(ROOT)), "folders": folders})
+        if url.path == "/api/image":
+            path = project_path(query.get("path", [""])[0])
+            if path.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+                raise ValueError("只提供图片预览。")
+            if not (ROOT / "outputs") in path.parents:
+                raise ValueError("仅提供结果目录内的图片。")
+            if not self.access.owns_output(path):
+                raise AccessDenied("图片不属于当前账号的任务。")
+            return self.respond(path.read_bytes(), content_type=mimetypes.guess_type(path.name)[0])
+        if url.path == "/api/previews":
+            folder = project_path(query.get("run", [""])[0])
+            if folder not in evaluate.discover_runs(ROOT / "outputs"):
+                raise ValueError("未知任务。")
+            if not self.access.owns_output(folder, exact=True):
+                raise AccessDenied("任务不属于当前账号。")
+            images = [str(path.relative_to(ROOT)) for path in folder.rglob('*')
+                      if path.suffix.lower() in (".jpg", ".png", ".jpeg") and 'gaussians' in path.parts]
+            return self.respond(images[:100])
+        return self.respond({"error": "Not found"}, 404)
+
+    def download_model(self, model_id):
+        """登记过的产物文件才能下载；落盘路径必须仍在所属任务目录内。"""
+        model = self.access.model(model_id)
+        path = project_path(model['path'])
+        folder = project_path(model['task_output'])
+        if folder not in path.parents:
+            raise ValueError('模型文件不在所属任务目录内。')
+        if not path.is_file():
+            raise ValueError('模型文件已不存在。')
+        return self.send_file(path, path.name)
+
+    def register(self, payload):
+        user, token, claimed = access.sign_up(self.server.store, payload.get('username'), payload.get('password'))
+        return self.respond({"user": user, "claimed_projects": claimed,
+                             "projects": self.server.store.projects(user['id'])},
+                            headers={"Set-Cookie": access.session_cookie(token)})
+
+    def login(self, payload):
+        outcome = access.sign_in(self.server.store, payload.get('username'), payload.get('password'), self.throttle)
+        if not outcome:
+            return self.respond({"error": "用户名或密码错误。"}, 401)
+        user, token = outcome
+        return self.respond({"user": user, "projects": self.server.store.projects(user['id'])},
+                            headers={"Set-Cookie": access.session_cookie(token)})
+
+    def logout(self):
+        removed = access.sign_out(self.server.store, access.read_token(self.headers.get('Cookie')))
+        return self.respond({"ok": True, "removed": removed},
+                            headers={"Set-Cookie": access.session_cookie(None)})
 
     def do_POST(self):
         if not self.valid_host() or self.headers.get("X-Local-Token") != self.server.token:
             return self.respond({"error": "请求校验失败"}, 403)
+        path = urlparse(self.path).path
+        self.prepare()
         try:
             size = int(self.headers.get("Content-Length", 0))
-            if urlparse(self.path).path == '/api/upload-file':
+            if path == '/api/upload-file':
+                # 上传走原始字节流，不走下面的 JSON 分支；登录校验仍需先行
+                if self.require_login():
+                    return None
                 query = parse_qs(urlparse(self.path).query)
-                result = self.server.uploads.receive(query.get('id', [''])[0], query.get('name', [''])[0], self.rfile, size)
-                return self.respond(result)
-            if not 0 < size <= (1024**2 if self.path == '/api/image-selection' else 65536):
+                return self.respond(self.server.uploads.receive(query.get('id', [''])[0], query.get('name', [''])[0],
+                                                                self.rfile, size, self.access.owner))
+            if not 0 < size <= (1024**2 if path == '/api/image-selection' else 65536):
                 raise ValueError("请求大小无效。")
             payload = json.loads(self.rfile.read(size))
             if not isinstance(payload, dict):
                 raise ValueError("请求需要 JSON 对象。")
-            if self.path == '/api/upload-new':
-                result = self.server.uploads.create(payload.get('project_id', 'default'), payload.get('name'))
-            elif self.path == '/api/projects':
-                result = self.server.store.create_project(payload.get('name'))
-            elif self.path == '/api/project-rename':
-                result = self.server.store.rename_project(payload.get('id'), payload.get('name'))
-            elif self.path == '/api/image-sets':
-                result = self.server.store.register_set(payload.get('project_id', 'default'),
-                                                       payload.get('path', ''), payload.get('input_type', 'images'),
-                                                       payload.get('name'))
-            elif self.path == '/api/quality-analyze':
-                result = self.server.store.analyze_images(payload.get('image_set_id'), payload.get('thresholds'))
-            elif self.path == '/api/image-selection':
-                result = self.server.store.save_selection(payload.get('image_set_id'), payload.get('names'), payload.get('fingerprint'))
-            elif self.path == "/api/start":
-                result = self.server.jobs.start(payload)
-            elif self.path == "/api/cancel":
-                result = self.server.jobs.cancel()
-            elif self.path == "/api/report":
-                available = {row["id"]: row for row in records(self.server.store)}
-                selected = payload.get("runs", [])
-                if not selected or any(value not in available for value in selected):
-                    raise ValueError("请选择有效的任务。")
-                output = ROOT / "outputs/reports" / datetime.now().strftime("comparison_%Y%m%d_%H%M%S_%f")
-                evaluate.export_report([available[value]["path"] for value in selected], output)
-                result = {"path": str(output.relative_to(ROOT))}
-            elif self.path == "/api/open":
-                available = {row["id"]: row for row in records(self.server.store)}
-                row = available.get(payload.get("run"))
-                if not row:
-                    raise ValueError("请选择已完成任务。")
-                if payload.get("viewer") and row["method"] == "3dgs":
-                    from .train_3dgs import inspect_brush
-                    brush = inspect_brush()[0]
-                    gaussian = next(item["path"] for item in row["artifacts"] if item["kind"] == "gaussian_ply")
-                    command = [brush, str(project_path(gaussian)), "--with-viewer"]
-                else:
-                    command = ["open" if sys.platform == "darwin" else "xdg-open", row["path"]]
-                subprocess.Popen(command, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                result = {"opened": True}
-            else:
-                return self.respond({"error": "Not found"}, 404)
-            self.respond(result)
+            if path == '/api/auth/register':
+                return self.register(payload)
+            if path == '/api/auth/login':
+                return self.login(payload)
+            if path == '/api/auth/logout':
+                return self.logout()
+            if self.require_login():
+                return None
+            return self.write_route(path, payload)
+        except RateLimited as error:
+            self.respond({"error": str(error)}, 429)
+        except AccessDenied as error:
+            self.respond({"error": str(error)}, 403)
         except (ValueError, OSError, KeyError, StopIteration, TypeError, SystemExit) as error:
             self.respond({"error": str(error) or "参数无效"}, 400)
+
+    def write_route(self, path, payload):
+        if path == '/api/upload-new':
+            result = self.server.uploads.create(payload.get('project_id', 'default'), payload.get('name'),
+                                                self.access.owner)
+        elif path == '/api/projects':
+            result = self.server.store.create_project(payload.get('name'), self.access.owner)
+        elif path == '/api/project-rename':
+            result = self.server.store.rename_project(payload.get('id'), payload.get('name'), self.access.owner)
+        elif path == '/api/image-sets':
+            result = self.server.store.register_set(payload.get('project_id', 'default'),
+                                                   payload.get('path', ''), payload.get('input_type', 'images'),
+                                                   payload.get('name'), owner=self.access.owner)
+        elif path == '/api/quality-analyze':
+            result = self.server.store.analyze_images(payload.get('image_set_id'), payload.get('thresholds'),
+                                                      self.access.owner)
+        elif path == '/api/image-selection':
+            result = self.server.store.save_selection(payload.get('image_set_id'), payload.get('names'),
+                                                      payload.get('fingerprint'), self.access.owner)
+        elif path == "/api/start":
+            result = self.server.jobs.start(payload, self.access.owner)
+        elif path == "/api/cancel":
+            if not self.job_visible():
+                raise AccessDenied('当前任务不属于此账号，不能取消。')
+            result = self.server.jobs.cancel()
+        elif path == "/api/report":
+            available = {row["id"]: row for row in records(self.server.store, None, self.access.owner)}
+            selected = payload.get("runs", [])
+            if not selected or any(value not in available for value in selected):
+                raise ValueError("请选择有效的任务。")
+            output = ROOT / "outputs/reports" / datetime.now().strftime("comparison_%Y%m%d_%H%M%S_%f")
+            evaluate.export_report([available[value]["path"] for value in selected], output)
+            result = {"path": str(output.relative_to(ROOT))}
+        elif path == "/api/open":
+            available = {row["id"]: row for row in records(self.server.store, None, self.access.owner)}
+            row = available.get(payload.get("run"))
+            if not row:
+                raise ValueError("请选择已完成任务。")
+            if payload.get("viewer") and row["method"] == "3dgs":
+                from .train_3dgs import inspect_brush
+                brush = inspect_brush()[0]
+                gaussian = next(item["path"] for item in row["artifacts"] if item["kind"] == "gaussian_ply")
+                command = [brush, str(project_path(gaussian)), "--with-viewer"]
+            else:
+                command = ["open" if sys.platform == "darwin" else "xdg-open", row["path"]]
+            subprocess.Popen(command, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            result = {"opened": True}
+        else:
+            return self.respond({"error": "Not found"}, 404)
+        return self.respond(result)
 
     def log_message(self, *args):
         pass
@@ -499,7 +665,7 @@ def main():
     (ROOT / 'data').mkdir(exist_ok=True)
     with (ROOT / 'data/workbench.lock').open('a') as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquire_lock(lock)
         except BlockingIOError:
             parser.exit(1, '项目服务已在运行，请使用已有界面，或先在原终端停止服务。\n')
         try:
@@ -512,6 +678,7 @@ def main():
             store.recover()
             server.store = store
             server.token, server.jobs, server.uploads = secrets.token_urlsafe(32), Jobs(store), Uploads(store)
+            server.throttle = accounts.Throttle()
             url = "http://127.0.0.1:" + str(server.server_port)
             print("界面：" + url, flush=True)
             if not args.no_browser:

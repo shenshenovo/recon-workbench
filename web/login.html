@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>登录 · Recon Workbench</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="auth-body">
+    <main class="auth-card">
+      <div class="auth-brand"><span class="brand-mark">R</span>Recon Workbench</div>
+      <p class="note">
+        账号用于区分本机不同使用者的项目、图片集、任务与模型。数据仍保存在这台电脑上。
+      </p>
+      <div class="tabbar auth-tabs">
+        <button class="active" data-mode="login" type="button">登录</button
+        ><button data-mode="register" type="button">注册</button>
+      </div>
+      <form id="auth-form">
+        <label for="username">用户名</label>
+        <input
+          id="username"
+          name="username"
+          autocomplete="username"
+          maxlength="32"
+          required
+          placeholder="2～32 个字符"
+        />
+        <label for="password">密码</label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          minlength="8"
+          maxlength="128"
+          required
+          placeholder="至少 8 个字符"
+        />
+        <label for="password2" id="password2-label" hidden>确认密码</label>
+        <input
+          id="password2"
+          type="password"
+          autocomplete="new-password"
+          minlength="8"
+          maxlength="128"
+          hidden
+        />
+        <button id="submit" class="primary auth-submit" type="submit">登录</button>
+      </form>
+      <p id="auth-message" class="danger" role="alert"></p>
+      <p id="auth-hint" class="note"></p>
+    </main>
+    <script>
+      window.LOCAL_TOKEN = "__TOKEN__";
+    </script>
+    <script src="/login.js"></script>
+  </body>
+</html>
