@@ -184,15 +184,15 @@ preview.mkdir()
         self.server.server_close()
         self.thread.join(timeout=3)
 
-    def request(self, path, data=None, cookie=None, token=True):
+    def request(self, path, data=None, cookie=None, token=True, raw=None):
         connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
         headers = {}
         if token:
             headers['X-Local-Token'] = 'test-token'
         if cookie:
             headers['Cookie'] = cookie
-        body = json.dumps(data).encode() if data is not None else None
-        if body is not None:
+        body = raw if raw is not None else json.dumps(data).encode() if data is not None else None
+        if body is not None and raw is None:
             headers['Content-Type'] = 'application/json'
         try:
             connection.request('POST' if body is not None else 'GET', path, body, headers)
@@ -222,6 +222,8 @@ preview.mkdir()
         status, _, _ = self.request('/reconstruct')
         self.assertEqual(status, 302)
         self.assertTrue(self.request('/api/auth/me')[1]['auth_required'])
+        # 上传走原始字节流，也必须先登录
+        self.assertEqual(self.request('/api/upload-file?id=any&name=a.png', raw=b'png')[0], 401)
 
     def test_register_login_logout_cycle(self):
         _, cookie = self.register('alice')

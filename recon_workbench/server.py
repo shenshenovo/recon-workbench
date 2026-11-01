@@ -574,6 +574,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             size = int(self.headers.get("Content-Length", 0))
             if path == '/api/upload-file':
+                # 上传走原始字节流，不走下面的 JSON 分支；登录校验仍需先行
+                if self.require_login():
+                    return None
                 query = parse_qs(urlparse(self.path).query)
                 return self.respond(self.server.uploads.receive(query.get('id', [''])[0], query.get('name', [''])[0],
                                                                 self.rfile, size, self.access.owner))
