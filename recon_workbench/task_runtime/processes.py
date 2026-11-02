@@ -104,13 +104,15 @@ class OwnedProcess:
         self.process.wait(timeout=1)
 
 
-def launch(*, cwd, stdout, popen=subprocess.Popen):
+def launch(*, cwd, stdout, popen=subprocess.Popen, env=None):
     if os.name != 'posix':
         raise ValueError('PR1 仅支持 POSIX 本地进程组；Windows 原生进程树尚未支持。')
-    env = os.environ.copy()
-    env['RECON_RUNTIME_OWNED'] = '1'
+    child_env = os.environ.copy()
+    if env:
+        child_env.update(env)
+    child_env['RECON_RUNTIME_OWNED'] = '1'
     process = popen([sys.executable, '-u', str(Path(__file__).with_name('worker.py'))],
-                    cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=stdout,
+                    cwd=cwd, env=child_env, stdin=subprocess.PIPE, stdout=stdout,
                     stderr=subprocess.STDOUT, start_new_session=True)
     # start_new_session 保证组号=PID，即便包装器极早退出也无需 getpgid。
     return OwnedProcess(process, process.pid, process_identity(process.pid))

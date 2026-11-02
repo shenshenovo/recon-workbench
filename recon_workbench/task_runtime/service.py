@@ -79,8 +79,10 @@ class RuntimeJobs:
             identity = old['submission_identity']
             fingerprint = snapshots.digest({'project_id': project_id, 'image_set_id': image_set['id'],
                                              'name': name, 'business': business, 'input': identity})
-            return self.repository.response(self.repository.by_key(project_id, key, fingerprint)['id'], self.scheduler.blocked_reason)
+            return self.repository.response(self.repository.by_key(project_id, key, fingerprint)['id'],
+                                           self.scheduler.blocked_reason, self.scheduler.resources)
         self._platform_check(business['method'])
+        resource_request = self.scheduler.resources.request_for(business['method'], business)
         description = snapshots.describe_input(self.store, image_set)
         if business['method'] == 'fast3r' and len(description['names']) > business['fast3r_max_views']:
             raise ValueError('Fast3R 选中照片超过当前数量上限，请减少照片或调整上限。')
@@ -90,17 +92,18 @@ class RuntimeJobs:
         output = root / 'outputs' / (name + '_' + task_id)
         log = root / 'outputs/.ui_logs' / (output.name + '.log')
         parameters = dict(payload, project_id=project_id, image_set_id=image_set['id'],
-                          submission_identity=description['identity'])
+                          submission_identity=description['identity'], resource_request=resource_request)
         task, created = self.repository.prepare(project_id=project_id, image_set_id=image_set['id'], name=name,
             method=business['method'], output=self.store.relative(output), log=self.store.relative(log), parameters=parameters,
-            command=[], request_fingerprint=fingerprint, idempotency_key=key, task_id=task_id)
+            command=[], request_fingerprint=fingerprint, idempotency_key=key, task_id=task_id,
+            resource_request=resource_request)
         if not created:
-            return self.repository.response(task['id'], self.scheduler.blocked_reason)
+            return self.repository.response(task['id'], self.scheduler.blocked_reason, self.scheduler.resources)
         try:
             parameters = snapshots.prepare(self.store, task, description, parameters)
             command = [__import__('sys').executable, '-u', str(root / 'main.py')] + self.arguments(parameters, output)
-            if not self.repository.publish(task_id, parameters, command, description['fingerprint']):
-                return self.repository.response(task_id, self.scheduler.blocked_reason)
+            if not self.repository.publish(task_id, parameters, command, description['fingerprint'], resource_request):
+                return self.repository.response(task_id, self.scheduler.blocked_reason, self.scheduler.resources)
         except Exception as error:
             self.repository.fail_preparing(task_id, error)
             raise
@@ -108,7 +111,7 @@ class RuntimeJobs:
         start_error = self.scheduler.wait_started(task_id)
         if start_error is not None:
             raise OSError(str(start_error))
-        return self.repository.response(task_id, self.scheduler.blocked_reason)
+        return self.repository.response(task_id, self.scheduler.blocked_reason, self.scheduler.resources)
 
     def cancel(self, task_id=None):
         if task_id is not None and not isinstance(task_id, str):
@@ -120,6 +123,12 @@ class RuntimeJobs:
 
     def snapshot_queue(self, project_id=None):
         return self.scheduler.snapshot(project_id)
+
+    def resources_snapshot(self):
+        return self.scheduler.resource_snapshot()
+
+    def resume_queue(self):
+        return self.scheduler.resume_dispatch()
 
     def snapshot(self, task_id=None):
         from ..server import task_detail
@@ -137,6 +146,6 @@ class RuntimeJobs:
         import re
         progress = list(re.finditer(r'(\d+)\s*/\s*(\d+)\s+Steps', task['log_text']))
         last = progress[-1] if progress else None
-        return {**self.repository.response(task_id, self.scheduler.blocked_reason), 'returncode': task['returncode'],
+        return {**self.repository.response(task_id, self.scheduler.blocked_reason, self.scheduler.resources), 'returncode': task['returncode'],
                 'log': task['log_text'], 'states': task['states'],
                 'progress': {'step': int(last[1]), 'total': int(last[2])} if last else None}

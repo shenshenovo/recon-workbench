@@ -1,9 +1,9 @@
 # 任务运行管理
 
-当前状态：**PR1 已实现**：SQLite 持久化 FIFO 单 worker、幂等提交、按任务取消和受控进程树清理。PR2/PR3 仍为规划。
+当前状态：**PR1、PR2 已实现**：SQLite 持久化队列、按任务取消、CPU 额度、整卡 GPU 账本和受控并行。PR3 仍为规划。
 
 这里集中存放你负责的任务队列、CPU/GPU 调度、进程清理、阶段恢复和备份恢复代码。
-PR1 已提供 `migrations.py`、`repository.py`、`snapshots.py`、`service.py`、`scheduler.py`、`processes.py` 和 `worker.py`；资源、阶段恢复和备份模块按后续 PR 添加。
+PR1 已提供队列、快照和进程清理模块；PR2 新增 `resources.py` 并扩展迁移、仓储、服务和调度；阶段恢复和备份模块按后续 PR 添加。
 
 ## 从哪里开始
 
@@ -37,17 +37,17 @@ recon_workbench/task_runtime/
     test_processes.py       # PR1 计划
     test_api.py             # PR1 起持续补充
     test_migrations.py      # PR1 起持续补充
-    test_resources.py       # PR2 计划
+    test_resources.py       # PR2
     test_recovery.py        # PR3 计划
     test_backup.py          # PR3 计划
   migrations.py            # PR1 计划：版本化增量迁移
   repository.py            # PR1 计划：事务、claim、执行尝试和条件更新
-  scheduler.py             # PR1 计划：单 worker；PR2 扩展资源调度
+  scheduler.py             # PR1 单 worker；PR2 扩展资源调度
   processes.py             # PR1 计划：进程树所有权和取消升级
   service.py               # PR1：Workspace/HTTP 与运行时适配
   snapshots.py             # PR1：输入快照、哈希和原子发布
   worker.py                # PR1：登记后放行算法命令的包装进程
-  resources.py             # PR2 计划：CPU/GPU 需求、预留、释放
+  resources.py             # PR2：CPU/GPU 需求、探测、预留、释放
   recovery.py              # PR3 计划：阶段检查及恢复计划
   validators.py            # PR3 计划：各路线产物校验
   backup.py                # PR3 计划：离线备份、验证和恢复 CLI

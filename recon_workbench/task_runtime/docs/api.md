@@ -1,6 +1,6 @@
 # 任务运行管理 API
 
-状态：PR1 的队列、提交、查询和取消已实现；PR2/PR3 标记的接口仍是目标契约。表中 PR 表示首次交付阶段。
+状态：PR1 的队列、提交、查询和取消已实现；PR2 的资源查询、资源预算和受控并行已实现；PR3 标记的接口仍是目标契约。表中 PR 表示首次交付阶段。
 现有契约见仓库 `docs/COLLABORATION.md`；每个实现 PR 同步生产者、前端、旧接口测试和该文档。
 
 ## 1. 通用约定
@@ -87,10 +87,10 @@ queue_position 是当前全局待运行顺序（非预计开始时间），仅 q
 | --- | --- |
 | `current_attempt_id` | string或null；未派发时null |
 | `queue_position` | integer或null；动态计算 |
-| `waiting_reason` | string或null；worker_busy/cpu_busy/gpu_busy/dispatch_paused/reconciliation_required |
+| `waiting_reason` | string或null；worker_busy/max_running_tasks/cpu_busy/gpu_busy/gpu_probe_unknown/gpu_unavailable/dispatch_paused/reconciliation_required |
 | `cancel_requested_at` | string或null |
 | `attempts` | PR3起执行历史列表，不能让旧 attempts 日志混入当前进度 |
-| `resource_request` | PR2起 `{cpu_slots,gpu_required}` |
+| `resource_request` | PR2起 `{cpu_slots,gpu_required,gpu_backend}` |
 | `allocation` | PR2起 `{cpu_slots,gpu_id}` 或null |
 
 `GET /api/job?task_id=...` 沿用 status/returncode/output/states/progress/log/task_id；未启动日志为空、progress为null。
@@ -123,6 +123,19 @@ PR2 附 `running_task_ids/queued_count`，全局页面通过 `/api/queue` 展示
 配置首版在文件中修改并重启，无在线配置更新 API。提交不允许任意指定环境变量或伪造 allocation。
 `threads` 同时作为任务 CPU 预算输入，GPU 路线仍需 CPU；默认沿用已校验的 threads 默认值。
 如后续增加独立 cpu_slots 参数，必须同 PR 更新有效线程数映射，不能存在“申请2但运行8”的默认行为。
+
+配置文件 `data/task_runtime/resources.json` 示例：
+
+```json
+{
+  "cpu_slots": 8,
+  "max_running_tasks": 3,
+  "gpu_devices": [{"id": "gpu0", "backend": "cuda", "selector": "GPU-UUID"}],
+  "method_backends": {"fast3r": "cuda"}
+}
+```
+
+selector 使用 `nvidia-smi --query-gpu=uuid --format=csv,noheader` 查询到的 `GPU-...` UUID，不接受易变的数字序号。没有该文件时保持单执行槽和 CPU 兼容模式；显式配置 GPU 后，设备必须通过 `nvidia-smi` 身份探测才允许 GPU 任务启动。
 
 `GET /api/resources` 示例：
 

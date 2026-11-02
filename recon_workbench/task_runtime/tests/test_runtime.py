@@ -42,7 +42,8 @@ class RuntimeTests(unittest.TestCase):
         for thread in threads: thread.start()
         for thread in threads: thread.join()
         self.assertEqual(sum(item is not None for item in values), 1)
-        self.assertEqual(values[0]['id'], a['id'])
+        winner = next(item for item in values if item is not None)
+        self.assertEqual(winner['id'], a['id'])
 
     def test_scheduler_runs_second_after_first(self):
         marker = self.root / 'marker'
@@ -72,6 +73,7 @@ class RuntimeTests(unittest.TestCase):
             time.sleep(.02)
         scheduler.close()
         self.assertEqual(self.repo.get(task['id'])['status'], 'cancelled')
+        self.assertEqual(scheduler.resources.snapshot(self.repo)['cpu']['allocated_slots'], 0)
 
     def test_migration_failure_rolls_back(self):
         db = sqlite3.connect(self.workspace.path)
@@ -106,11 +108,27 @@ class RuntimeTests(unittest.TestCase):
             INSERT INTO models VALUES('old-model','old-task','ply','outputs/old/model.ply',12);
         ''')
         legacy.commit()
-        self.assertEqual(migrations.apply(legacy), 1)
-        self.assertEqual(migrations.apply(legacy), 1)
+        self.assertEqual(migrations.apply(legacy), 2)
+        self.assertEqual(migrations.apply(legacy), 2)
         self.assertEqual(legacy.execute('SELECT id FROM tasks').fetchall(), [('old-task',)])
         self.assertEqual(legacy.execute('SELECT id FROM models').fetchall(), [('old-model',)])
         legacy.close()
+
+    def test_version_one_database_upgrades_to_resource_ledger(self):
+        path = self.root / 'data/version-one.sqlite3'
+        db = sqlite3.connect(path)
+        db.executescript('''
+            CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT,created_at TEXT);
+            CREATE TABLE tasks(id TEXT PRIMARY KEY,project_id TEXT,status TEXT,output TEXT);
+        ''')
+        migrations._migration_1(db)
+        db.execute('CREATE TABLE task_runtime_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        db.execute("INSERT INTO task_runtime_meta VALUES ('schema_version','1')")
+        db.commit()
+        self.assertEqual(migrations.apply(db), 2)
+        self.assertIn('resource_request', {row[1] for row in db.execute('PRAGMA table_info(tasks)')})
+        self.assertEqual(db.execute("SELECT value FROM task_runtime_meta WHERE key='schema_version'").fetchone()[0], '2')
+        db.close()
 
     def test_idempotency_conflict_is_explicit(self):
         a = self.task('a', [], key='same', fingerprint='one')

@@ -1,4 +1,4 @@
-"""单执行槽后台派发；HTTP 查询不承担状态更新。"""
+"""受资源预算约束的持久化任务派发器。"""
 import logging
 from pathlib import Path
 import subprocess
@@ -6,16 +6,19 @@ import threading
 import sqlite3
 
 from . import processes
-from .repository import TaskRepository
+from .repository import RuntimeConflict, TaskRepository
+from .resources import ResourceManager
 from .. import evaluate
 
 logger = logging.getLogger(__name__)
 
 
 class Scheduler:
-    def __init__(self, workspace, *, popen=subprocess.Popen, cancel_timeouts=(10., 5., 5.)):
+    def __init__(self, workspace, *, popen=subprocess.Popen, cancel_timeouts=(10., 5., 5.),
+                 resource_config=None, resource_probe=None):
         self.workspace = workspace
         self.repository = TaskRepository(workspace)
+        self.resources = ResourceManager(workspace, config=resource_config, probe=resource_probe)
         self.popen = popen
         self.cancel_timeouts = cancel_timeouts
         self.blocked_reason = None
@@ -27,9 +30,15 @@ class Scheduler:
         self.worker = None
         self.owner = None
         self.task_id = None
+        self.workers = {}
+        self.owners = {}
         self._started = {}
         self._start_errors = {}
         self._reconcile()
+        try:
+            self.resources.validate_ledger(self.repository)
+        except RuntimeConflict as error:
+            self._block(error)
 
     def _block(self, error):
         self.blocked_reason = 'reconciliation_required'
@@ -64,7 +73,10 @@ class Scheduler:
                     continue
                 except (ValueError, OSError, KeyError):
                     pass
-            self.repository.reconcile_attempt(attempt, True, '服务中断，旧执行未重新接管；已确认无残留计算，需显式重新提交。')
+            self.repository.reconcile_attempt(
+                attempt, True,
+                '服务中断，旧执行未重新接管；已确认无残留计算，需显式重新提交。'
+            )
 
     def start(self):
         with self.lock:
@@ -77,45 +89,66 @@ class Scheduler:
         self.wake.set()
 
     def wait_started(self, task_id, timeout=.5):
-        # 旧测试/调用方可等待本次尝试的 monitor；提交本身仍是持久化队列。
+        # 提交本身仍是持久化队列；此事件只提供旧调用方的短暂启动错误反馈。
         event = self._started.setdefault(task_id, threading.Event())
         event.wait(timeout)
         return self._start_errors.pop(task_id, None)
 
+    def _prune_workers(self):
+        with self.lock:
+            for task_id, worker in list(self.workers.items()):
+                if not worker.is_alive():
+                    self.workers.pop(task_id, None)
+                    self.owners.pop(task_id, None)
+            if self.workers:
+                self.task_id = next(iter(self.workers))
+                self.worker = self.workers[self.task_id]
+                self.owner = self.owners.get(self.task_id)
+            else:
+                self.task_id = None
+                self.owner = None
+
     def _dispatch(self):
         try:
             while not self.stop_event.is_set():
-                if self.blocked_reason:
-                    self.wake.wait(.2)
-                    self.wake.clear()
-                    continue
+                started_any = False
                 with self.lock:
-                    if self.stop_event.is_set():
-                        return
-                    try:
-                        task = self.repository.claim_next()
-                    except sqlite3.OperationalError:
-                        # Ephemeral test workspaces may be removed while the
-                        # daemon is idle; a production workspace remains and
-                        # is retried on the next wake-up.
-                        if not Path(self.repository.path).exists():
-                            return
-                        raise
-                    if task:
-                        self.task_id = task['id']
-                        self.worker = threading.Thread(target=self._execute, args=(task,), name='task-runtime-attempt', daemon=True)
-                        self.worker.start()
-                if task:
-                    self.worker.join()
-                    with self.lock:
-                        self.task_id = None
-                        self.owner = None
-                else:
+                    self._prune_workers()
+                    if not self.blocked_reason:
+                        capacity = self.resources.config.max_running_tasks - len(self.workers)
+                        for _ in range(max(0, capacity)):
+                            if self.stop_event.is_set():
+                                break
+                            try:
+                                task = self.repository.claim_next(self.resources)
+                            except sqlite3.OperationalError:
+                                if not Path(self.repository.path).exists():
+                                    return
+                                raise
+                            if task is None:
+                                break
+                            worker = threading.Thread(
+                                target=self._execute, args=(task,),
+                                name='task-runtime-attempt-' + task['id'][:8], daemon=True,
+                            )
+                            self.workers[task['id']] = worker
+                            self.worker = worker
+                            self.task_id = task['id']
+                            worker.start()
+                            started_any = True
+                if not started_any:
                     self.wake.wait(.2)
                     self.wake.clear()
         except Exception as error:
             self._block(error)
             logger.exception('后台派发异常，保留未结束 attempt 供下次核查')
+
+    def _worker_done(self, task_id):
+        with self.lock:
+            self.workers.pop(task_id, None)
+            self.owners.pop(task_id, None)
+            self._prune_workers()
+        self.notify()
 
     def _execute(self, task):
         attempt_id = task['current_attempt_id']
@@ -127,8 +160,14 @@ class Scheduler:
             log = self.workspace.root / task['log']
             log.parent.mkdir(parents=True, exist_ok=True)
             with log.open('w', encoding='utf-8') as stream:
-                owner = processes.launch(cwd=self.workspace.root, stdout=stream, popen=self.popen)
+                owner = processes.launch(
+                    cwd=self.workspace.root,
+                    stdout=stream,
+                    popen=self.popen,
+                    env=self.resources.execution_env(task),
+                )
             with self.lock:
+                self.owners[task['id']] = owner
                 self.owner = owner
             allowed = self.repository.set_process(task['id'], attempt_id, owner.pid, owner.pgid, owner.identity)
             if allowed and not self.stop_event.is_set():
@@ -180,6 +219,7 @@ class Scheduler:
                 logger.exception('保存最终状态失败，保留 attempt 供核查')
             started.set()
             self._started.pop(task['id'], None)
+            self._worker_done(task['id'])
 
     def cancel(self, task_id=None):
         result = self.repository.request_cancel(task_id)
@@ -187,18 +227,54 @@ class Scheduler:
         return result
 
     def snapshot(self, project_id=None):
-        result = self.repository.queue(project_id, self.blocked_reason)
+        result = self.repository.queue(project_id, self.blocked_reason, self.resources)
         result['blocked_detail'] = self.blocked_detail
         return result
+
+    def resource_snapshot(self):
+        return {
+            **self.resources.snapshot(self.repository),
+            'dispatch_paused': bool(self.blocked_reason),
+            'blocked_reason': self.blocked_reason,
+            'blocked_detail': self.blocked_detail,
+        }
+
+    def resume_dispatch(self):
+        with self.lock:
+            self._prune_workers()
+            if self.workers:
+                error = RuntimeConflict('活动任务仍在运行，不能重新核查派发状态。')
+                error.code = 'resource_state_conflict'
+                raise error
+            self.blocked_reason = None
+            self.blocked_detail = None
+            self._reconcile()
+            try:
+                self.resources.validate_ledger(self.repository)
+            except RuntimeConflict as error:
+                self._block(error)
+            if self.blocked_reason:
+                error = RuntimeConflict(self.blocked_detail or '仍有残留执行需要人工核查。')
+                error.code = 'reconciliation_required'
+                raise error
+            self.notify()
+            return self.resource_snapshot()
 
     def close(self):
         with self.lock:
             self.stop_event.set()
-            if self.task_id:
-                self.repository.request_cancel(self.task_id)
+            for task_id in list(self.workers):
+                try:
+                    self.repository.request_cancel(task_id)
+                except (RuntimeConflict, OSError):
+                    pass
         self.notify()
         if self.thread:
             self.thread.join(timeout=sum(self.cancel_timeouts) * 2 + 5)
-            if self.thread.is_alive():
-                self._block('服务停止时后台执行尚未退出，禁止再次派发。')
-                raise processes.ProcessCleanupError(self.blocked_detail)
+        deadline = sum(self.cancel_timeouts) * 2 + 5
+        for worker in list(self.workers.values()):
+            worker.join(timeout=deadline)
+        self._prune_workers()
+        if self.workers:
+            self._block('服务停止时后台执行尚未退出，禁止再次派发。')
+            raise processes.ProcessCleanupError(self.blocked_detail)

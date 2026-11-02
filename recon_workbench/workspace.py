@@ -242,8 +242,13 @@ class Workspace:
         if not row:
             raise ValueError('任务不存在。')
         result = dict(row)
-        for key in ('parameters', 'command'):
-            result[key] = json.loads(result[key])
+        for key in ('parameters', 'command', 'resource_request'):
+            if result.get(key) is not None:
+                result[key] = json.loads(result[key])
+        if result.get('resource_request') is None:
+            result['resource_request'] = {
+                'cpu_slots': 1, 'gpu_required': False, 'gpu_backend': None,
+            }
         result['models'] = self.models(task_id)
         return result
 

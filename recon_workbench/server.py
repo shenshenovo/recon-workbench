@@ -207,7 +207,8 @@ def runtime_task_detail(store, task_id, jobs=None):
     from .task_runtime.repository import TaskRepository
     task = task_detail(store, task_id)
     repo = jobs.repository if jobs else TaskRepository(store)
-    task.update(repo.response(task_id, jobs.scheduler.blocked_reason if jobs else None))
+    task.update(repo.response(task_id, jobs.scheduler.blocked_reason if jobs else None,
+                              jobs.scheduler.resources if jobs else None))
     task['attempts'] = repo.attempts(task_id)
     return task
 
@@ -251,10 +252,14 @@ class Handler(BaseHTTPRequestHandler):
                 project_id = query.get('project_id', [None])[0]
                 rows = self.server.store.tasks(project_id)
                 for row in rows:
-                    row.update(self.server.jobs.repository.response(row['id'], self.server.jobs.scheduler.blocked_reason))
+                    row.update(self.server.jobs.repository.response(
+                        row['id'], self.server.jobs.scheduler.blocked_reason,
+                        self.server.jobs.scheduler.resources))
                 return self.respond(rows)
             if url.path == '/api/queue':
                 return self.respond(self.server.jobs.snapshot_queue(query.get('project_id', [None])[0]))
+            if url.path == '/api/resources':
+                return self.respond(self.server.jobs.resources_snapshot())
             if url.path == '/api/quality':
                 return self.respond(self.server.store.quality_state(query.get('image_set_id', [''])[0]))
             if url.path == '/api/task':
@@ -345,6 +350,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.server.jobs.start(payload)
             elif self.path == "/api/cancel":
                 result = self.server.jobs.cancel(payload.get('task_id'))
+            elif self.path == '/api/queue-resume':
+                result = self.server.jobs.resume_queue()
             elif self.path == "/api/report":
                 available = {row["id"]: row for row in records(self.server.store)}
                 selected = payload.get("runs", [])
