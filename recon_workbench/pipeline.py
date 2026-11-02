@@ -32,6 +32,9 @@ def get_parser():
     parser.add_argument("--max-image-size", type=positive_int, default=1200)
     parser.add_argument("--threads", type=positive_int, default=4)
     parser.add_argument("--mvs-stage", choices=("dense", "mesh", "textured"), default="textured")
+    parser.add_argument("--mvs-resume-from", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--mvs-resume-stage", choices=("mesh", "textured"), help=argparse.SUPPRESS)
+    parser.add_argument("--mvs-manifest-fingerprint", help=argparse.SUPPRESS)
     parser.add_argument("--dense-resolution-level", type=int, choices=range(5), default=1)
     parser.add_argument("--steps", type=positive_int, default=5000)
     parser.add_argument("--max-splats", type=positive_int, default=1000000)
@@ -92,6 +95,10 @@ def build_plan(args, output):
                    "--dense-resolution-level", args.dense_resolution_level]
         if args.openmvs_bin:
             command.extend(["--openmvs-bin", args.openmvs_bin])
+        if args.mvs_resume_from:
+            command.extend(["--resume-from", args.mvs_resume_from,
+                            "--resume-stage", args.mvs_resume_stage,
+                            "--resume-manifest-fingerprint", args.mvs_manifest_fingerprint])
         plan.append(("02_mvs", command, result))
     elif args.method == "3dgs":
         result = output / "3dgs"

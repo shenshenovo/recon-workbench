@@ -89,6 +89,8 @@ python3 main.py --method 3dgs --dataset Brush数据集目录 --output 新任务�
 | GET `/api/job` | 无 | 当前界面任务状态、阶段、日志、可用时的 `progress` |
 | GET `/api/resources` | 无 | 服务 CPU 预算/占用、GPU allocation 和设备观察状态 |
 | POST `/api/queue-resume` | `{}` | 残留核查通过后解除派发暂停；失败返回资源/核查冲突 |
+| POST `/api/task-resume-check` | `task_id` | 只读预检，返回 can_resume、plan_fingerprint、reuse、rerun、blocked_reasons |
+| POST `/api/task-resume` | `task_id`, `plan_fingerprint` | 原子创建独立 attempt 并重新入队，同计划重放返回已有 attempt |
 | GET `/api/folders?path=data` | 项目相对目录 | `path`, `folders[{name,path}]` |
 | POST `/api/start` | 见下方示例；可带 `project_id`/`image_set_id` | `output`（项目相对路径）, `pid`, `task_id` |
 | POST `/api/cancel` | `{}` | `cancel_requested` |
@@ -141,7 +143,7 @@ CLI 对应 `--camera-model`、`--camera-params`、`--single-camera`，统一入�
 
 `data/workbench.sqlite3` 保存元数据（已被 `.gitignore` 排除），文件仍存放在原来的 `data/` 与 `outputs/`。SQLite 中资产路径是项目相对路径；原始参数、调用命令和算法 JSON 仍可能包含本机绝对路径。
 
-项目默认 ID 为 `default`，已有顶层实验在启动时幂等导入此项目，保留原文件；包含失败、取消和未正常结束的任务。导入的历史任务优先使用原始 `started_at`，没有时采用文件夹修改时间，因此不应将所有历史记录时间视为精确启动时间。后续通过 CLI 创建的结果在下次服务启动时登记。
+项目默认 ID 为 `default`，已有顶层实验在启动时幂等导入此项目，保留原文件；包含失败、取消和未正常结束的任务。导入的历史任务优先使用原始 `started_at`，没有时采用文件夹修改时间，因此不应将所有历史记录时间视为精确启动时间。后续通过 CLI 创建的结果在下次服务启动时登记。失败/中断任务可通过 `/api/task-resume-check` 只读预检后调用 `/api/task-resume` 创建独立 attempt；离线工作区备份使用 `python -m recon_workbench.task_runtime.backup`，恢复后派发保持暂停。
 
 `project_id` → `image_set_id` → `task_id` → 模型记录 `id` 为稳定关联。`/api/start` 缺省项目为 `default`；带 `image_set_id` 时从记录读取 `input` 和 `input_type`，忽略请求中的这两个字段，并检查图片集属于项目。新图片集的 `input_type` 可以是 `images` / `dataset` / `sfm-output`；后两种表示复用输入，不保证都有图片清单。上传批次 `id` 仅在当前进程有效，`image_set_id` 和已上传照片长期保留。
 
@@ -197,3 +199,5 @@ python3 main.py --method sfm --images data/自己的照片 --dry-run
 ```
 
 Python 测试不要求下载数据集或安装算法程序；真实 CPU/GPU 重建需在本机另做验证。当前本地工具发现与文件夹打开行为主要面向 macOS，其他系统需要指定工具路径并验证适配。
+
+PR3 将运行时数据库从 v2 增量升级到 v3，新增 attempt 输出/日志、来源和输入/参数/执行指纹，不删除旧记录。恢复成功才切换 tasks.output；当前阶段/日志由 current_attempt_id 定位，/api/task 返回 attempts 历史。离线恢复仅发布 data/outputs 到新目录，原排队项保留为 interrupted，需重新预检并恢复；派发默认暂停。完整 CLI 和范围限制见 recon_workbench/task_runtime/docs/api.md。

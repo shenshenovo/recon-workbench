@@ -1,6 +1,6 @@
 # 任务运行管理 API
 
-状态：PR1 的队列、提交、查询和取消已实现；PR2 的资源查询、资源预算和受控并行已实现；PR3 标记的接口仍是目标契约。表中 PR 表示首次交付阶段。
+状态：PR1/PR2/PR3 的队列、资源、恢复接口已实现；备份和恢复使用本节的离线 CLI。表中 PR 表示首次交付阶段。
 现有契约见仓库 `docs/COLLABORATION.md`；每个实现 PR 同步生产者、前端、旧接口测试和该文档。
 
 ## 1. 通用约定
@@ -159,7 +159,7 @@ selector 使用 `nvidia-smi --query-gpu=uuid --format=csv,noheader` 查询到的
 
 ## 7. PR3：阶段恢复
 
-仅失败/中断任务可恢复，queued/活动/取消/成功任务返回409；缺失输入或校验工具可返回可解释的 blocked 计划。
+仅失败/中断任务可预检；queued/活动/取消/成功任务的预检返回409。同计划的恢复入队重放返回已有 attempt；输入缺失给出 blocked 计划。工具/代码版本变化时不复用旧阶段。
 
 `POST /api/task-resume-check`：
 
@@ -186,14 +186,14 @@ selector 使用 `nvidia-smi --query-gpu=uuid --format=csv,noheader` 查询到的
 {"task_id":"task-示例","plan_fingerprint":"sha256-示例"}
 ```
 
-返回200 `{task_id, attempt_id, status:"queued", queue_position}`。
+返回200 `{task_id, attempt_id, status, queue_position, created}`；新建时通常为 queued，重复请求返回当前状态。
 计划变化返回409 `resume_plan_changed`；同计划重复请求如已创建对应尝试则返回该尝试，不重复入队。
 不同计划与活动尝试冲突返回409。新 attempt 沿用输入和参数，不能借恢复修改训练数据、线程或关键路线参数。
 若要改变参数，创建新任务；不自动把失败任务无限重试。
 
 ## 8. PR3：离线备份 CLI
 
-以下为计划命令，当前执行会失败，待 PR3 实现 `task_runtime/backup.py`：
+以下命令由 `task_runtime/backup.py` 提供；创建和恢复要求服务停止、工作区无活动任务且目标目录不存在：
 
 ```bash
 # 所有命令要求服务停止，并核查无残留计算；目标应位于工作区外
@@ -215,8 +215,9 @@ python -m recon_workbench.task_runtime.backup restore \
 退出码：0成功，1运行/校验失败，2参数错误，130中断；失败向stderr说明具体缺失/损坏/冲突文件，stdout给简短结果。
 恢复只创建数据工作区，不打包应用源码或算法工具；在匹配版本代码的新目录恢复 data/outputs 后再安装/配置环境。
 首次启动派发暂停，人工核对后通过 `/api/queue-resume` 解除；旧机进程不被新目录接管。
+原 queued 任务在恢复库中转为 interrupted，保留 ID、序号和原命令；逐项预检/恢复后重新入队，避免执行旧机 Python 或工具命令。归档仅支持 data/outputs，范围外资产、链接、缺资产都会明确失败。
 
 ## 9. 每个 PR 的文档更新检查
 
 PR1 核对提交返回值、状态枚举、按ID轮询、幂等和取消；PR2 补资源等待、设备能力和多任务兼容；
-PR3 补恢复指纹、attempt来源、备份版本和退出码。每次附请求/响应测试及当前实现状态，禁止把未启用API列为可用。
+PR3 已补恢复指纹、attempt 来源、备份版本和退出码；HTTP 只提供预检和入队，归档仍走离线 CLI。

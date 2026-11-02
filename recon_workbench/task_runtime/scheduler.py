@@ -8,6 +8,7 @@ import sqlite3
 from . import processes
 from .repository import RuntimeConflict, TaskRepository
 from .resources import ResourceManager
+from .validators import capture_output_manifests
 from .. import evaluate
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,9 @@ class Scheduler:
             self.resources.validate_ledger(self.repository)
         except RuntimeConflict as error:
             self._block(error)
+        if self.repository.persistent_dispatch_pause() and not self.blocked_reason:
+            self.blocked_reason = 'restored_workspace_confirmation'
+            self.blocked_detail = '工作区来自离线备份；请核对环境后调用 /api/queue-resume。'
 
     def _block(self, error):
         self.blocked_reason = 'reconciliation_required'
@@ -46,7 +50,7 @@ class Scheduler:
         logger.error('任务派发已阻塞：%s', error)
 
     def _validate_success(self, task):
-        folder = self.workspace.root / task['output']
+        folder = self.workspace.root / task.get('attempt_output', task['output'])
         state = evaluate.read_json(folder / 'status.json')
         summary = evaluate.read_json(folder / 'summary.json')
         if state.get('status') != 'completed' or not summary:
@@ -65,6 +69,7 @@ class Scheduler:
                 self._block(error)
                 continue
             task = self.repository.get(attempt['task_id'])
+            task['attempt_output'] = attempt.get('output_path') or task['output']
             # 仅在整个组退出且算法已发布有效结果时补全 DB；取消优先。
             if task['status'] in ('starting', 'running', 'cancelling'):
                 try:
@@ -77,6 +82,11 @@ class Scheduler:
                 attempt, True,
                 '服务中断，旧执行未重新接管；已确认无残留计算，需显式重新提交。'
             )
+            try:
+                output = attempt.get('output_path') or task.get('output')
+                capture_output_manifests(self.workspace.root, self.workspace.root / output)
+            except (OSError, ValueError):
+                logger.exception('生成中断 attempt 的恢复产物清单失败')
 
     def start(self):
         with self.lock:
@@ -152,19 +162,24 @@ class Scheduler:
 
     def _execute(self, task):
         attempt_id = task['current_attempt_id']
+        attempt = self.repository.attempt(attempt_id)
         owner = None
         cleanup_confirmed = True
         status, code, error = 'failed', None, None
         started = self._started.setdefault(task['id'], threading.Event())
         try:
-            log = self.workspace.root / task['log']
+            log = self.workspace.root / (attempt.get('log_path') or task['log'])
             log.parent.mkdir(parents=True, exist_ok=True)
             with log.open('w', encoding='utf-8') as stream:
+                environment = self.resources.execution_env(task)
+                environment.update(RECON_TASK_ID=task['id'], RECON_ATTEMPT_ID=attempt_id,
+                                   RECON_REQUEST_FINGERPRINT=task.get('request_fingerprint') or '',
+                                   RECON_INPUT_FINGERPRINT=task.get('input_fingerprint') or '')
                 owner = processes.launch(
                     cwd=self.workspace.root,
                     stdout=stream,
                     popen=self.popen,
-                    env=self.resources.execution_env(task),
+                    env=environment,
                 )
             with self.lock:
                 self.owners[task['id']] = owner
@@ -212,6 +227,12 @@ class Scheduler:
             if not cleanup_confirmed:
                 status = 'interrupted'
         finally:
+            if cleanup_confirmed and status in ('failed', 'interrupted'):
+                try:
+                    capture_output_manifests(self.workspace.root,
+                        self.workspace.root / task.get('attempt_output', task['output']))
+                except (OSError, ValueError) as manifest_error:
+                    error = (error + '；' if error else '') + '产物清单生成失败：' + str(manifest_error)
             try:
                 self.repository.finish(task['id'], attempt_id, status, code, error, cleanup_confirmed)
             except Exception as persistence_error:
@@ -257,6 +278,7 @@ class Scheduler:
                 error = RuntimeConflict(self.blocked_detail or '仍有残留执行需要人工核查。')
                 error.code = 'reconciliation_required'
                 raise error
+            self.repository.set_persistent_dispatch_pause(False)
             self.notify()
             return self.resource_snapshot()
 

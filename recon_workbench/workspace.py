@@ -229,9 +229,9 @@ class Workspace:
         task_id = uuid.uuid4().hex
         with self.connect() as db:
             db.execute('''INSERT INTO tasks
-                (id,project_id,image_set_id,name,method,status,output,log,parameters,command,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
-                (task_id, project_id, set_id, label(name), method, status, self.relative(output),
+                (id,project_id,image_set_id,name,method,status,output,output_root,log,parameters,command,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (task_id, project_id, set_id, label(name), method, status, self.relative(output), self.relative(output),
                  self.relative(log) if log else None, json.dumps(parameters, ensure_ascii=False),
                  json.dumps(list(command)), now()))
         return self.task(task_id)
@@ -332,7 +332,7 @@ class Workspace:
         outputs = self.root / 'outputs'
         if not outputs.is_dir():
             return
-        known = {task['output'] for task in self.tasks()}
+        known = {path for task in self.tasks() for path in (task['output'], task.get('output_root')) if path}
         for folder in sorted(outputs.iterdir()):
             if not folder.is_dir() or folder.is_symlink() or folder.name.startswith('.'):
                 continue

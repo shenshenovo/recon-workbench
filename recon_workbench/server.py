@@ -55,6 +55,11 @@ def job_arguments(payload, output):
         argv.extend(["--" + name, str(value)])
     argv.extend(["--camera-model", payload.get("camera_model", "PINHOLE"),
                  "--mvs-stage", payload.get("mvs_stage", "textured")])
+    runtime_resume = payload.get('_runtime_resume')
+    if isinstance(runtime_resume, dict) and runtime_resume.get('mvs_resume_stage'):
+        argv.extend(['--mvs-resume-from', runtime_resume['mvs_resume_from'],
+                     '--mvs-resume-stage', runtime_resume['mvs_resume_stage'],
+                     '--mvs-manifest-fingerprint', runtime_resume['mvs_manifest_fingerprint']])
     if method == 'fast3r':
         from .fast3r import DEFAULT_MODEL
         for field, default, allowed in [('fast3r_size', 512, (224, 512)),
@@ -184,12 +189,21 @@ def records(store=None, project_id=None):
     return rows
 
 
-def task_detail(store, task_id):
+def task_detail(store, task_id, repository=None):
     task = store.task(task_id)
     folder = project_path(task['output'])
+    if repository and task.get('current_attempt_id'):
+        try:
+            attempt = repository.attempt(task['current_attempt_id'])
+            if attempt.get('output_path'):
+                folder = project_path(attempt['output_path'])
+        except TaskNotFound:
+            pass
     task['states'] = []
     if folder.is_dir():
         for path in sorted(folder.rglob('status.json')):
+            if 'attempts' in path.relative_to(folder).parts:
+                continue
             state = evaluate.read_json(path)
             task['states'].append({'path': str(path.relative_to(folder)), 'status': state.get('status'),
                                    'stage': state.get('current_stage'), 'error': state.get('error')})
@@ -205,8 +219,8 @@ def task_detail(store, task_id):
 
 def runtime_task_detail(store, task_id, jobs=None):
     from .task_runtime.repository import TaskRepository
-    task = task_detail(store, task_id)
     repo = jobs.repository if jobs else TaskRepository(store)
+    task = task_detail(store, task_id, repo)
     task.update(repo.response(task_id, jobs.scheduler.blocked_reason if jobs else None,
                               jobs.scheduler.resources if jobs else None))
     task['attempts'] = repo.attempts(task_id)
@@ -352,6 +366,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.server.jobs.cancel(payload.get('task_id'))
             elif self.path == '/api/queue-resume':
                 result = self.server.jobs.resume_queue()
+            elif self.path == '/api/task-resume-check':
+                result = self.server.jobs.resume_check(payload.get('task_id'))
+            elif self.path == '/api/task-resume':
+                result = self.server.jobs.resume_task(payload.get('task_id'), payload.get('plan_fingerprint'))
             elif self.path == "/api/report":
                 available = {row["id"]: row for row in records(self.server.store)}
                 selected = payload.get("runs", [])

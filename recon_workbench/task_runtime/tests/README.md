@@ -1,19 +1,19 @@
 # 专属测试
 
-当前只建立目录，没有实现测试；测试清单见 [testing.md](../docs/testing.md)。
+已实现队列、资源、阶段恢复和备份恢复测试；测试清单见 [testing.md](../docs/testing.md)。
 
 ## 组织
 
-- PR1：`test_queue.py`、`test_processes.py`、`test_api.py`、`test_migrations.py`。
+- PR1：`test_runtime.py`，HTTP 回归在根目录 `tests/test_workspace.py`。
 - PR2：新增 `test_resources.py`，扩展 API、取消及迁移测试。
 - PR3：新增 `test_recovery.py`、`test_backup.py`，扩展 API、迁移和历史记录回归。
-- 受控子进程样例放在 `fixtures/`，在临时工作区执行，不读写真实照片和数据库。
+- 受控子进程在临时工作区生成，不读写真实照片和数据库。
 - 同步使用事件、管道或就绪文件加明确超时，不靠固定 sleep 假设执行顺序。
 
 ## 命令
 
 ```bash
-# 专属测试；骨架阶段发现 0 项，不能当作功能通过证据
+# 专属测试
 python -m unittest discover -s recon_workbench/task_runtime/tests -t . -v
 
 # 全仓库回归；会同时发现根目录 tests/ 和本包测试

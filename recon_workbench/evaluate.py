@@ -146,6 +146,9 @@ def discover_runs(root):
     """Top-level task summaries take precedence over their stage summaries."""
     folders = {path.parent for path in Path(root).glob("*/summary.json")}
     folders.update(path.parent for path in Path(root).glob("*/export_*.ply"))
+    # Explicit task recovery keeps each attempt in an isolated child directory.
+    # Include only attempt roots, never their nested SfM/MVS stage summaries.
+    folders.update(path.parent for path in Path(root).glob("*/attempts/*/summary.json"))
     return sorted(folders)
 
 

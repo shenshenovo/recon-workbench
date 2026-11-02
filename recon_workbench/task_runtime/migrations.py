@@ -1,7 +1,7 @@
 """工作区运行时的事务化、增量迁移；不重建或删除历史表。"""
 import sqlite3
 
-LATEST_VERSION = 2
+LATEST_VERSION = 3
 
 
 def _add_column(db, table, name, definition):
@@ -52,6 +52,29 @@ def _migration_2(db):
     db.execute('''CREATE INDEX resource_allocations_task ON resource_allocations(task_id, allocated_at)''')
 
 
+def _migration_3(db):
+    _add_column(db, 'tasks', 'output_root', 'TEXT')
+    _add_column(db, 'task_attempts', 'output_path', 'TEXT')
+    _add_column(db, 'task_attempts', 'log_path', 'TEXT')
+    _add_column(db, 'task_attempts', 'source_attempt_id', 'TEXT REFERENCES task_attempts(id)')
+    _add_column(db, 'task_attempts', 'resume_fingerprint', 'TEXT')
+    _add_column(db, 'task_attempts', 'recovery_plan', 'TEXT')
+    _add_column(db, 'task_attempts', 'request_fingerprint', 'TEXT')
+    _add_column(db, 'task_attempts', 'input_fingerprint', 'TEXT')
+    _add_column(db, 'task_attempts', 'execution_fingerprint', 'TEXT')
+    _add_column(db, 'task_attempts', 'parameters_fingerprint', 'TEXT')
+    db.execute('UPDATE tasks SET output_root=output WHERE output_root IS NULL')
+    db.execute('''UPDATE task_attempts SET output_path=(
+        SELECT output FROM tasks WHERE tasks.id=task_attempts.task_id
+    ) WHERE output_path IS NULL''')
+    if 'log' in {row[1] for row in db.execute('PRAGMA table_info(tasks)')}:
+        db.execute('''UPDATE task_attempts SET log_path=(
+            SELECT log FROM tasks WHERE tasks.id=task_attempts.task_id
+        ) WHERE log_path IS NULL''')
+    db.execute("INSERT OR IGNORE INTO task_runtime_meta(key,value) VALUES ('dispatch_paused','0')")
+    db.execute('CREATE INDEX task_attempts_resume ON task_attempts(task_id,resume_fingerprint,attempt_no)')
+
+
 def apply(db):
     # SAVEPOINT composes with Workspace's existing transaction and protects
     # DDL as well as the version marker if any individual step fails.
@@ -69,6 +92,10 @@ def apply(db):
         if current == 1:
             _migration_2(db)
             db.execute("UPDATE task_runtime_meta SET value='2' WHERE key='schema_version'")
+            current = 2
+        if current == 2:
+            _migration_3(db)
+            db.execute("UPDATE task_runtime_meta SET value='3' WHERE key='schema_version'")
         db.execute('RELEASE task_runtime_migration')
         return LATEST_VERSION
     except BaseException:

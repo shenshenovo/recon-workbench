@@ -10,6 +10,7 @@ import uuid
 from .repository import TaskRepository, TaskNotFound
 from .scheduler import Scheduler
 from . import snapshots
+from .recovery import RecoveryManager
 
 
 class RuntimeJobs:
@@ -20,6 +21,7 @@ class RuntimeJobs:
         self.arguments = arguments
         self.scheduler = Scheduler(store, popen=popen)
         self.repository = self.scheduler.repository
+        self.recovery = RecoveryManager(store, self.repository, arguments)
         self.submit_lock = threading.RLock()
         self.scheduler.start()
 
@@ -47,7 +49,9 @@ class RuntimeJobs:
     def start(self, payload):
         # 同一服务内串行准备避免重复快照；SQLite 唯一约束仍负责跨连接去重。
         with self.submit_lock:
-            return self._submit(dict(payload))
+            safe_payload = {key: value for key, value in dict(payload).items()
+                            if not (isinstance(key, str) and key.startswith('_'))}
+            return self._submit(safe_payload)
 
     def _submit(self, payload):
         root = self.store.root
@@ -130,6 +134,22 @@ class RuntimeJobs:
     def resume_queue(self):
         return self.scheduler.resume_dispatch()
 
+    def resume_check(self, task_id):
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError('task_id 必须是字符串。')
+        result = self.recovery.inspect(task_id)
+        result.pop('_plan', None)
+        return result
+
+    def resume_task(self, task_id, plan_fingerprint):
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError('task_id 必须是字符串。')
+        if not isinstance(plan_fingerprint, str) or len(plan_fingerprint) != 64:
+            raise ValueError('plan_fingerprint 无效。')
+        result = self.recovery.resume(task_id, plan_fingerprint)
+        self.scheduler.notify()
+        return result
+
     def snapshot(self, task_id=None):
         from ..server import task_detail
         if task_id is None:
@@ -142,7 +162,7 @@ class RuntimeJobs:
                 if not tasks:
                     return {'status': 'idle', 'log': '', 'states': [], 'progress': None}
                 task_id = tasks[0]['id']
-        task = task_detail(self.store, task_id)
+        task = task_detail(self.store, task_id, self.repository)
         import re
         progress = list(re.finditer(r'(\d+)\s*/\s*(\d+)\s+Steps', task['log_text']))
         last = progress[-1] if progress else None

@@ -110,12 +110,13 @@ def run_dense(pipeline, images, model, args, tools):
     output = pipeline.output
     undistorted = output / "undistorted"
     work = output / "dense"
-    work.mkdir()
+    work.mkdir(exist_ok=bool(getattr(args, 'resume_stage', None)))
     for name, tool in tools.items():
         (output / "logs" / (name + "_help.txt")).write_text(tool["help"], encoding="utf-8")
-    pipeline.run("06_undistort", ["image_undistorter", "--image_path", images,
-                 "--input_path", model, "--output_path", undistorted, "--output_type", "COLMAP",
-                 "--max_image_size", args.dense_max_image_size])
+    if not getattr(args, 'resume_stage', None):
+        pipeline.run("06_undistort", ["image_undistorter", "--image_path", images,
+                     "--input_path", model, "--output_path", undistorted, "--output_type", "COLMAP",
+                     "--max_image_size", args.dense_max_image_size])
 
     def run(name, tool_name, arguments):
         # Interface archives omit dense data/meshes; preserve native MVS scenes for downstream tools.
@@ -130,30 +131,47 @@ def run_dense(pipeline, images, model, args, tools):
     scene = work / "scene.mvs"
     dense_scene = work / "dense.mvs"
     dense_ply = work / "dense.ply"
-    run("07_import_mvs", "InterfaceCOLMAP", ["--input-file", undistorted, "--output-file", scene,
-        "--image-folder", undistorted / "images"])
-    if not scene.is_file():
-        raise RuntimeError("OpenMVS 导入未生成 scene.mvs。")
-    dense_args = ["--input-file", scene, "--output-file", dense_scene,
-                  "--resolution-level", args.dense_resolution_level,
-                  "--max-resolution", args.dense_max_image_size,
-                  "--min-resolution", min(320, args.dense_max_image_size),
-                  "--number-views", 5, "--number-views-fuse", 2, "--crop-to-roi", 0]
-    run("08_dense", "DensifyPointCloud", dense_args)
+    mesh_scene = work / "mesh.mvs"
+    resume_stage = getattr(args, 'resume_stage', None)
+    if not resume_stage:
+        run("07_import_mvs", "InterfaceCOLMAP", ["--input-file", undistorted, "--output-file", scene,
+            "--image-folder", undistorted / "images"])
+        if not scene.is_file():
+            raise RuntimeError("OpenMVS 导入未生成 scene.mvs。")
+        dense_args = ["--input-file", scene, "--output-file", dense_scene,
+                      "--resolution-level", args.dense_resolution_level,
+                      "--max-resolution", args.dense_max_image_size,
+                      "--min-resolution", min(320, args.dense_max_image_size),
+                      "--number-views", 5, "--number-views-fuse", 2, "--crop-to-roi", 0]
+        run("08_dense", "DensifyPointCloud", dense_args)
+    elif resume_stage == 'mesh':
+        if not all(path.is_file() and path.stat().st_size for path in (scene, dense_scene, dense_ply)):
+            raise RuntimeError('恢复网格阶段需要有效的 dense scene 与 dense PLY。')
+    elif resume_stage == 'textured':
+        if not all(path.is_file() and path.stat().st_size for path in
+                   (scene, dense_scene, dense_ply, work / 'mesh.mvs', work / 'mesh.ply')):
+            raise RuntimeError('恢复纹理阶段需要有效的 dense 与 mesh 产物。')
     counts = ply_counts(dense_ply)
     from .ply_compatible import convert
     compatible_ply = work / "dense_colmap.ply"
-    convert(dense_ply, compatible_ply)
+    if not resume_stage:
+        convert(dense_ply, compatible_ply)
     if not dense_scene.is_file():
         raise RuntimeError("稠密重建未生成 dense.mvs。")
     result = {"dense_pointcloud": str(dense_ply), "dense_points": counts["vertex"],
               "colmap_pointcloud": str(compatible_ply),
               "dense_scene": str(dense_scene), "dense_device": "cpu", "completed_stage": "dense"}
+    if resume_stage:
+        reused = ['06_undistort', '07_import_mvs', '08_dense']
+        if resume_stage == 'textured':
+            reused.append('09_mesh')
+        for stage_name in reused:
+            pipeline.state['stages'].append({'name': stage_name, 'status': 'reused',
+                'source': str(args.resume_from), 'manifest_fingerprint': args.resume_manifest_fingerprint})
     # Save usable dense output even if a later meshing/texturing stage fails.
     pipeline.state["dense_result"] = result.copy()
     pipeline.save()
-    if args.stage in ("mesh", "textured"):
-        mesh_scene = work / "mesh.mvs"
+    if args.stage in ("mesh", "textured") and resume_stage != 'textured':
         mesh_ply = work / "mesh.ply"
         # Native scenes already carry the point visibility data; re-importing the PLY
         # discards/duplicates that state in some OpenMVS builds.
@@ -165,18 +183,24 @@ def run_dense(pipeline, images, model, args, tools):
                       completed_stage="mesh")
         pipeline.state["dense_result"] = result.copy()
         pipeline.save()
-        if args.stage == "textured":
-            run("10_texture", "TextureMesh", ["--input-file", mesh_scene,
-                "--output-file", work / "textured.mvs", "--export-type", "obj"])
-            textured = work / "textured.obj"
-            material = work / "textured.mtl"
-            if not textured.is_file() or not material.is_file() or textured.stat().st_size == 0:
-                raise RuntimeError("纹理阶段没有生成有效 OBJ / MTL 文件。")
-            textures = material_textures(material)
-            result.update(textured_mesh=str(textured), texture_material=str(material),
-                          texture_images=textures, completed_stage="textured")
-            pipeline.state["dense_result"] = result.copy()
-            pipeline.save()
+    elif resume_stage == 'textured':
+        mesh_counts = ply_counts(work / 'mesh.ply')
+        result.update(mesh=str(work / 'mesh.ply'), mesh_vertices=mesh_counts['vertex'],
+                      mesh_faces=mesh_counts.get('face', 0), completed_stage='mesh')
+        pipeline.state['dense_result'] = result.copy()
+        pipeline.save()
+    if args.stage == 'textured':
+        run("10_texture", "TextureMesh", ["--input-file", mesh_scene,
+            "--output-file", work / "textured.mvs", "--export-type", "obj"])
+        textured = work / "textured.obj"
+        material = work / "textured.mtl"
+        if not textured.is_file() or not material.is_file() or textured.stat().st_size == 0:
+            raise RuntimeError("纹理阶段没有生成有效 OBJ / MTL 文件。")
+        textures = material_textures(material)
+        result.update(textured_mesh=str(textured), texture_material=str(material),
+                      texture_images=textures, completed_stage="textured")
+        pipeline.state["dense_result"] = result.copy()
+        pipeline.save()
     return result
 
 
@@ -200,6 +224,9 @@ def main(argv=None):
     parser.add_argument("--sfm-output", type=Path, help="已有 reconstruct.py 结果目录")
     parser.add_argument("--output", type=Path, help="新的结果目录，默认 outputs/dense_时间戳")
     parser.add_argument("--stage", choices=["dense", "mesh", "textured"], default="dense")
+    parser.add_argument("--resume-from", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--resume-stage", choices=("mesh", "textured"), help=argparse.SUPPRESS)
+    parser.add_argument("--resume-manifest-fingerprint", help=argparse.SUPPRESS)
     parser.add_argument("--colmap", default="colmap")
     parser.add_argument("--threads", type=positive_int, default=4)
     parser.add_argument("--check-env", action="store_true")
@@ -220,6 +247,20 @@ def main(argv=None):
                 print(name + " 可用：" + tool["executable"])
             return 0
         source, images, model, _, sparse_summary = load_source(args.sfm_output)
+        if bool(args.resume_from) != bool(args.resume_stage):
+            raise ValueError('恢复 MVS 必须同时提供复用来源和目标阶段。')
+        if args.resume_from and not args.resume_manifest_fingerprint:
+            raise ValueError('恢复 MVS 缺少产物清单指纹。')
+        resume_check = None
+        if args.resume_from:
+            from .task_runtime.validators import validate_mvs_output
+            args.resume_from = args.resume_from.expanduser().resolve(strict=True)
+            if args.resume_from.is_symlink():
+                raise ValueError('MVS 复用来源不能是符号链接。')
+            completed = 'dense' if args.resume_stage == 'mesh' else 'mesh'
+            resume_check = validate_mvs_output(args.resume_from, completed)
+            if not resume_check['valid'] or resume_check['manifest_fingerprint'] != args.resume_manifest_fingerprint:
+                raise ValueError(resume_check.get('reason') or 'MVS 复用产物指纹变化。')
         output = (args.output or Path("outputs") / datetime.now().strftime("dense_%Y%m%d_%H%M%S_%f")).expanduser().resolve()
         if output == images or images in output.parents or output == source or source in output.parents:
             raise ValueError("输出目录不能位于图片目录或原始 SfM 结果目录内。")
@@ -231,6 +272,9 @@ def main(argv=None):
         write_json(output / "config.json", settings)
         pipeline = Pipeline(output, executable, {"source_sfm": str(source), "selected_model": str(model),
                             "requested_stage": args.stage, "input_images": sparse_summary["input_images"]})
+        if args.resume_from:
+            from .task_runtime.recovery import copy_verified_mvs_artifacts
+            copy_verified_mvs_artifacts(args.resume_from, output, resume_check['manifest_fingerprint'])
         print("复用稀疏模型：{}\n输出：{}\n计算：CPU，{} 线程".format(model, output, args.threads), flush=True)
         result = run_dense(pipeline, images, model, args, tools)
         summary = dict(sparse_summary, **result)
