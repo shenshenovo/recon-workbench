@@ -8,10 +8,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
 import os
-import re
 from pathlib import Path
 import secrets
-import signal
 import subprocess
 import sys
 import threading
@@ -20,6 +18,7 @@ import webbrowser
 from .prepare_brush import image_size
 from .pointcloud import cloud_packet
 from .workspace import Workspace
+from .task_runtime.repository import RuntimeConflict, TaskNotFound
 from .paths import PROJECT_ROOT
 from . import image_quality
 
@@ -56,6 +55,11 @@ def job_arguments(payload, output):
         argv.extend(["--" + name, str(value)])
     argv.extend(["--camera-model", payload.get("camera_model", "PINHOLE"),
                  "--mvs-stage", payload.get("mvs_stage", "textured")])
+    runtime_resume = payload.get('_runtime_resume')
+    if isinstance(runtime_resume, dict) and runtime_resume.get('mvs_resume_stage'):
+        argv.extend(['--mvs-resume-from', runtime_resume['mvs_resume_from'],
+                     '--mvs-resume-stage', runtime_resume['mvs_resume_stage'],
+                     '--mvs-manifest-fingerprint', runtime_resume['mvs_manifest_fingerprint']])
     if method == 'fast3r':
         from .fast3r import DEFAULT_MODEL
         for field, default, allowed in [('fast3r_size', 512, (224, 512)),
@@ -105,140 +109,10 @@ def tail_log(path, size=16000):
 
 
 class Jobs:
-    def __init__(self, store=None):
-        self.store = store
-        self.lock = threading.Lock()
-        self.process = None
-        self.output = None
-        self.log = None
-        self.cancel_requested = False
-        self.task_id = None
-        self.worker = None
-
-    def start(self, payload):
-        with self.lock:
-            if self.process and self.process.poll() is None:
-                raise ValueError("已有任务运行中，请等待完成或停止它。")
-            label = payload.get("name", "experiment").strip() or "experiment"
-            if len(label) > 60 or any(char in label for char in '/\\\x00') or label in (".", ".."):
-                raise ValueError("实验名称无效。")
-            payload = dict(payload)
-            project_id = payload.get('project_id', 'default')
-            image_set = None
-            if self.store:
-                self.store.project(project_id)
-                if payload.get('image_set_id'):
-                    image_set = self.store.image_set(payload['image_set_id'])
-                    if image_set['project_id'] != project_id:
-                        raise ValueError('图片集不属于所选项目。')
-                    payload.update(input=image_set['path'], input_type=image_set['input_type'])
-            output = ROOT / "outputs" / (label + "_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
-            argv = job_arguments(payload, output)
-            if self.store and image_set is None:
-                image_set = self.store.register_set(project_id, payload['input'], payload.get('input_type', 'dataset'))
-            quality = None
-            if self.store and image_set['input_type'] == 'images':
-                quality = self.store.quality_state(image_set['id'])
-                if not quality['report'] or not quality['selection']:
-                    raise ValueError('请先检测图片质量并保存筛选结果，再开始重建。')
-                names = image_quality.validate_selection(quality['report'], quality['selection']['names'],
-                                                         quality['selection']['fingerprint'])
-                if payload.get('method') == 'fast3r' and len(names) > int(payload.get('fast3r_max_views', 8)):
-                    raise ValueError('Fast3R 选中照片超过当前数量上限；8GB 显存请先保存 2～4 张筛选再启动。')
-                snapshot_path = ROOT / 'data/task_inputs' / output.name / 'images'
-                payload.update(source_input=payload['input'], input=str(snapshot_path.relative_to(ROOT)),
-                               image_set_id=image_set['id'], selected_images=names,
-                               quality_fingerprint=quality['report']['fingerprint'],
-                               quality_manifest=str((snapshot_path.parent / 'selection.json').relative_to(ROOT)))
-                argv[argv.index('--images') + 1] = str(snapshot_path)
-            logs = ROOT / "outputs/.ui_logs"
-            logs.mkdir(parents=True, exist_ok=True)
-            log = logs / (output.name + ".log")
-            command = [sys.executable, "-u", str(ROOT / "main.py")] + argv
-            task = self.store.create_task(project_id, image_set['id'], label, payload.get('method', '3dgs'),
-                                          output, log, payload, command) if self.store else None
-            try:
-                if quality:
-                    with self.store.quality_lock:
-                        current_quality = self.store.quality_state(image_set['id'])
-                        if current_quality['selection'] != quality['selection'] or current_quality['report'] != quality['report']:
-                            raise ValueError('图片集或筛选结果已变化，请重新确认后启动。')
-                        files = image_quality.snapshot(ROOT, quality['report'], names, snapshot_path)
-                    (snapshot_path.parent / 'selection.json').write_text(json.dumps(
-                        {'image_set_id': image_set['id'], 'fingerprint': quality['report']['fingerprint'],
-                         'policy': quality['report']['policy'], 'files': files}, ensure_ascii=False, indent=2), encoding='utf-8')
-                    (snapshot_path.parent / 'quality.json').write_text(json.dumps(quality['report'], ensure_ascii=False, indent=2), encoding='utf-8')
-                with log.open("w", encoding="utf-8") as stream:
-                    self.process = subprocess.Popen(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT,
-                                                    start_new_session=True)
-            except (OSError, ValueError) as error:
-                if task:
-                    self.store.sync_task(task['id'], 'failed', error=str(error))
-                raise
-            self.output, self.log, self.cancel_requested = output, log, False
-            self.task_id = task['id'] if task else None
-            if task:
-                self.store.update_task(task['id'], status='running', pid=self.process.pid)
-                self.worker = threading.Thread(target=self.monitor, args=(self.process, task['id']), daemon=True)
-                self.worker.start()
-            return {"output": str(output.relative_to(ROOT)), "pid": self.process.pid, 'task_id': self.task_id}
-
-    def monitor(self, process, task_id):
-        code = process.wait()
-        with self.lock:
-            cancelled = self.task_id == task_id and self.cancel_requested
-            status = 'completed' if code == 0 else 'cancelled' if code in (130, -signal.SIGINT) or cancelled else 'failed'
-            self.store.sync_task(task_id, status, code,
-                                 error=None if code == 0 else '用户停止任务。' if status == 'cancelled' else '任务执行失败，请查看日志。')
-
-    def close(self):
-        self.cancel()
-        if self.process and self.process.poll() is None:
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(self.process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-        if self.worker:
-            self.worker.join(timeout=5)
-
-    def cancel(self):
-        with self.lock:
-            if self.process and self.process.poll() is None:
-                try:
-                    os.killpg(self.process.pid, signal.SIGINT)
-                    self.cancel_requested = True
-                except ProcessLookupError:
-                    pass
-            return {"cancel_requested": self.cancel_requested}
-
-    def snapshot(self):
-        with self.lock:
-            if not self.process:
-                return {"status": "idle", "log": "", "states": []}
-            code = self.process.poll()
-            states = []
-            if self.output.exists():
-                for path in sorted(self.output.rglob("status.json")):
-                    state = evaluate.read_json(path)
-                    states.append({"path": str(path.relative_to(self.output)), "status": state.get("status"),
-                                   "stage": state.get("current_stage"), "elapsed": state.get("elapsed_seconds"),
-                                   "error": state.get("error")})
-            log = tail_log(self.log)
-            for relative in ("3dgs/logs/03_train.log", "mvs/logs/08_dense.log", "sfm/logs/03_mapper.log", "fast3r/logs/01_inference.log"):
-                candidate = self.output / relative
-                if candidate.exists():
-                    log += "\n" + relative + "\n" + tail_log(candidate)
-            progress = list(re.finditer(r"(\d+)\s*/\s*(\d+)\s+Steps", log))
-            last = progress[-1] if progress else None
-            if self.store and self.task_id:
-                self.store.sync_task(self.task_id)
-            return {"status": "running" if code is None else "completed" if code == 0 else "cancelled" if code in (130, -signal.SIGINT) or self.cancel_requested else "failed",
-                    "returncode": code, "output": str(self.output.relative_to(ROOT)), "states": states, 'task_id': self.task_id,
-                    "progress": {"step": int(last[1]), "total": int(last[2])} if last else None,
-                    "log": log[-24000:]}
+    """HTTP 层只提供现有参数解析与子进程工厂，调度逻辑集中在 task_runtime。"""
+    def __new__(cls, store=None):
+        from .task_runtime.service import RuntimeJobs
+        return RuntimeJobs(store, arguments=job_arguments, popen=subprocess.Popen)
 
 
 class Uploads:
@@ -315,12 +189,21 @@ def records(store=None, project_id=None):
     return rows
 
 
-def task_detail(store, task_id):
+def task_detail(store, task_id, repository=None):
     task = store.task(task_id)
     folder = project_path(task['output'])
+    if repository and task.get('current_attempt_id'):
+        try:
+            attempt = repository.attempt(task['current_attempt_id'])
+            if attempt.get('output_path'):
+                folder = project_path(attempt['output_path'])
+        except TaskNotFound:
+            pass
     task['states'] = []
     if folder.is_dir():
         for path in sorted(folder.rglob('status.json')):
+            if 'attempts' in path.relative_to(folder).parts:
+                continue
             state = evaluate.read_json(path)
             task['states'].append({'path': str(path.relative_to(folder)), 'status': state.get('status'),
                                    'stage': state.get('current_stage'), 'error': state.get('error')})
@@ -331,6 +214,16 @@ def task_detail(store, task_id):
         if path.is_file():
             task['log_text'] += '\n' + relative + '\n' + tail_log(path)
     task['log_text'] = task['log_text'][-48000:]
+    return task
+
+
+def runtime_task_detail(store, task_id, jobs=None):
+    from .task_runtime.repository import TaskRepository
+    repo = jobs.repository if jobs else TaskRepository(store)
+    task = task_detail(store, task_id, repo)
+    task.update(repo.response(task_id, jobs.scheduler.blocked_reason if jobs else None,
+                              jobs.scheduler.resources if jobs else None))
+    task['attempts'] = repo.attempts(task_id)
     return task
 
 
@@ -370,11 +263,21 @@ class Handler(BaseHTTPRequestHandler):
                                      'tasks': self.server.store.tasks(project_id),
                                      'models': self.server.store.models(project_id=project_id)})
             if url.path == '/api/tasks':
-                return self.respond(self.server.store.tasks(query.get('project_id', [None])[0]))
+                project_id = query.get('project_id', [None])[0]
+                rows = self.server.store.tasks(project_id)
+                for row in rows:
+                    row.update(self.server.jobs.repository.response(
+                        row['id'], self.server.jobs.scheduler.blocked_reason,
+                        self.server.jobs.scheduler.resources))
+                return self.respond(rows)
+            if url.path == '/api/queue':
+                return self.respond(self.server.jobs.snapshot_queue(query.get('project_id', [None])[0]))
+            if url.path == '/api/resources':
+                return self.respond(self.server.jobs.resources_snapshot())
             if url.path == '/api/quality':
                 return self.respond(self.server.store.quality_state(query.get('image_set_id', [''])[0]))
             if url.path == '/api/task':
-                return self.respond(task_detail(self.server.store, query.get('id', [''])[0]))
+                return self.respond(runtime_task_detail(self.server.store, query.get('id', [''])[0], self.server.jobs))
             if url.path == '/api/source-image':
                 image_set = self.server.store.image_set(query.get('set', [''])[0])
                 image = next((image for image in image_set['images'] if image['name'] == query.get('name', [''])[0]), None)
@@ -383,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
                 path = project_path(image['path'])
                 return self.respond(path.read_bytes(), content_type=mimetypes.guess_type(path.name)[0])
             if url.path == "/api/job":
-                return self.respond(self.server.jobs.snapshot())
+                return self.respond(self.server.jobs.snapshot(query.get('task_id', [None])[0]))
             if url.path == "/api/runs":
                 return self.respond(records(self.server.store, query.get('project_id', [None])[0]))
             if url.path == '/viewer.js':
@@ -424,6 +327,8 @@ class Handler(BaseHTTPRequestHandler):
                           if path.suffix.lower() in (".jpg", ".png", ".jpeg") and 'gaussians' in path.parts]
                 return self.respond(images[:100])
             return self.respond({"error": "Not found"}, 404)
+        except TaskNotFound as error:
+            self.respond({'error': str(error)}, 404)
         except (ValueError, OSError) as error:
             self.respond({"error": str(error)}, 400)
 
@@ -458,7 +363,13 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/start":
                 result = self.server.jobs.start(payload)
             elif self.path == "/api/cancel":
-                result = self.server.jobs.cancel()
+                result = self.server.jobs.cancel(payload.get('task_id'))
+            elif self.path == '/api/queue-resume':
+                result = self.server.jobs.resume_queue()
+            elif self.path == '/api/task-resume-check':
+                result = self.server.jobs.resume_check(payload.get('task_id'))
+            elif self.path == '/api/task-resume':
+                result = self.server.jobs.resume_task(payload.get('task_id'), payload.get('plan_fingerprint'))
             elif self.path == "/api/report":
                 available = {row["id"]: row for row in records(self.server.store)}
                 selected = payload.get("runs", [])
@@ -484,6 +395,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 return self.respond({"error": "Not found"}, 404)
             self.respond(result)
+        except RuntimeConflict as error:
+            self.respond({'error': str(error), 'code': error.code}, 409)
+        except TaskNotFound as error:
+            self.respond({'error': str(error)}, 404)
         except (ValueError, OSError, KeyError, StopIteration, TypeError, SystemExit) as error:
             self.respond({"error": str(error) or "参数无效"}, 400)
 

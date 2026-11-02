@@ -87,6 +87,10 @@ python3 main.py --method 3dgs --dataset Brush数据集目录 --output 新任务�
 | --- | --- | --- |
 | GET `/api/runs?project_id=...` | 项目 ID 可省略 | 已完成任务数组，包含原有 `id`、新增 `task_id`/`project_id`、指标和评估曲线 |
 | GET `/api/job` | 无 | 当前界面任务状态、阶段、日志、可用时的 `progress` |
+| GET `/api/resources` | 无 | 服务 CPU 预算/占用、GPU allocation 和设备观察状态 |
+| POST `/api/queue-resume` | `{}` | 残留核查通过后解除派发暂停；失败返回资源/核查冲突 |
+| POST `/api/task-resume-check` | `task_id` | 只读预检，返回 can_resume、plan_fingerprint、reuse、rerun、blocked_reasons |
+| POST `/api/task-resume` | `task_id`, `plan_fingerprint` | 原子创建独立 attempt 并重新入队，同计划重放返回已有 attempt |
 | GET `/api/folders?path=data` | 项目相对目录 | `path`, `folders[{name,path}]` |
 | POST `/api/start` | 见下方示例；可带 `project_id`/`image_set_id` | `output`（项目相对路径）, `pid`, `task_id` |
 | POST `/api/cancel` | `{}` | `cancel_requested` |
@@ -135,11 +139,11 @@ CLI 对应 `--camera-model`、`--camera-params`、`--single-camera`，统一入�
 
 匹配命令退出成功后还会检查 `two_view_geometries` 是否有非空图像对；全部为空时报告几何验证失败并给出相机/重叠提示，不再直接进入 mapper。详细工具原因保留在 `logs/02_matching.log`。
 
-当前一个工作目录仅允许启动一个服务，同一时间运行一个任务，没有等待队列。同目录第二个服务即使换端口也会提示已有服务，避免两个实例互相改写任务状态。
+当前一个工作目录仅允许启动一个服务。运行时提供持久化 FIFO 队列和可配置 CPU/GPU 资源调度：服务可按 CPU slot 并行运行多个任务，GPU 按整卡独占；后续任务保留为 `queued`，服务重启后继续显示原顺序。发现无法核查的旧 attempt 时暂停派发并显示 `reconciliation_required`。
 
 `data/workbench.sqlite3` 保存元数据（已被 `.gitignore` 排除），文件仍存放在原来的 `data/` 与 `outputs/`。SQLite 中资产路径是项目相对路径；原始参数、调用命令和算法 JSON 仍可能包含本机绝对路径。
 
-项目默认 ID 为 `default`，已有顶层实验在启动时幂等导入此项目，保留原文件；包含失败、取消和未正常结束的任务。导入的历史任务优先使用原始 `started_at`，没有时采用文件夹修改时间，因此不应将所有历史记录时间视为精确启动时间。后续通过 CLI 创建的结果在下次服务启动时登记。
+项目默认 ID 为 `default`，已有顶层实验在启动时幂等导入此项目，保留原文件；包含失败、取消和未正常结束的任务。导入的历史任务优先使用原始 `started_at`，没有时采用文件夹修改时间，因此不应将所有历史记录时间视为精确启动时间。后续通过 CLI 创建的结果在下次服务启动时登记。失败/中断任务可通过 `/api/task-resume-check` 只读预检后调用 `/api/task-resume` 创建独立 attempt；离线工作区备份使用 `python -m recon_workbench.task_runtime.backup`，恢复后派发保持暂停。
 
 `project_id` → `image_set_id` → `task_id` → 模型记录 `id` 为稳定关联。`/api/start` 缺省项目为 `default`；带 `image_set_id` 时从记录读取 `input` 和 `input_type`，忽略请求中的这两个字段，并检查图片集属于项目。新图片集的 `input_type` 可以是 `images` / `dataset` / `sfm-output`；后两种表示复用输入，不保证都有图片清单。上传批次 `id` 仅在当前进程有效，`image_set_id` 和已上传照片长期保留。
 
@@ -157,9 +161,9 @@ CLI 对应 `--camera-model`、`--camera-params`、`--single-camera`，统一入�
 
 同一进程的检测、筛选保存、上传写入与输入复制使用锁避免内部状态竞争；工作区外部的文件修改则在复制时通过哈希检测。图片集和模型仍是本地资源关联，当前没有账号权限控制。质量接口需要 Pillow，组员先在虚拟环境中安装 `requirements.txt`，测试见 `TESTING_QUALITY.md`。
 
-任务保存 `parameters`, `command`, `output`, `log`, `pid`, `returncode`, `error`, `stage`, `elapsed` 和时间字段。状态为 `starting` / `running` / `completed` / `failed` / `cancelled` / `interrupted`。后台线程在子进程退出后保存最终状态，不依赖浏览器轮询。正常 Ctrl+C 会停止当前任务并保存结果；异常关闭后，下次启动读取原始任务状态：已有完成/失败/取消结果据实恢复，其他未结束任务标记 `interrupted`。不会根据旧 PID 自动接管或终止进程；异常关闭后原进程可能仍在运行，需检查日志和系统进程，再创建新任务。
+任务保存 `parameters`, `command`, `output`, `log`, `pid`, `returncode`, `error`, `stage`, `elapsed` 和时间字段；PR1 另保存 `queue_seq`, `idempotency_key`, `current_attempt_id` 与 `cancel_requested_at`，PR2 保存 `resource_request` 并在 `resource_allocations` 记录每个 attempt 的 CPU/GPU reservation。状态为 `preparing` / `queued` / `starting` / `running` / `cancelling` / `completed` / `failed` / `cancelled` / `interrupted`。后台 dispatcher 在子进程退出后保存最终状态，不依赖浏览器轮询。排队任务可按 `task_id` 取消；运行中取消先变 `cancelling`，经进程组清理确认后变 `cancelled`，资源随之释放。CPU 额度和 GPU allocation 在同一 SQLite 写事务中与 claim 一起提交；同一 GPU 不会同时分给两个 attempt。同键同参数的 `/api/start` 重放返回原任务，同键不同参数返回 409。异常关闭不根据旧 PID 自动接管或终止进程；旧 attempt 无法核查时阻止新任务派发。
 
-`/api/job` 仍表示本次服务当前执行任务；历史详情使用 `/api/task`。`/api/runs` 是已完成任务的评估列表，全部状态的持久化历史使用 `/api/tasks`。模型记录保存 `task_id`, `kind`, `path`, `bytes`，只登记结果目录内实际存在的文件，纹理附件也包含在内；目前支持查看其来源任务，下载和账号权限将在后续阶段实现。
+`/api/job?task_id=...` 返回指定任务；无 ID 时兼容返回当前活动任务、队首任务或最近终态。`/api/queue` 返回 running/queued 和派发阻塞原因；历史详情使用 `/api/task`。`/api/runs` 是已完成任务的评估列表，全部状态的持久化历史使用 `/api/tasks`。模型记录保存 `task_id`, `kind`, `path`, `bytes`，只登记结果目录内实际存在的文件，纹理附件也包含在内；目前支持查看其来源任务，下载和账号权限将在后续阶段实现。
 
 ## 5. 点云二进制接口
 
@@ -195,3 +199,5 @@ python3 main.py --method sfm --images data/自己的照片 --dry-run
 ```
 
 Python 测试不要求下载数据集或安装算法程序；真实 CPU/GPU 重建需在本机另做验证。当前本地工具发现与文件夹打开行为主要面向 macOS，其他系统需要指定工具路径并验证适配。
+
+PR3 将运行时数据库从 v2 增量升级到 v3，新增 attempt 输出/日志、来源和输入/参数/执行指纹，不删除旧记录。恢复成功才切换 tasks.output；当前阶段/日志由 current_attempt_id 定位，/api/task 返回 attempts 历史。离线恢复仅发布 data/outputs 到新目录，原排队项保留为 interrupted，需重新预检并恢复；派发默认暂停。完整 CLI 和范围限制见 recon_workbench/task_runtime/docs/api.md。

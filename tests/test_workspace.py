@@ -164,6 +164,21 @@ class PersistentApiTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         (self.root / 'web').mkdir()
         (self.root / 'web/index.html').write_text('__TOKEN__')
+        import os
+        config = self.root / 'data/task_runtime/resources.json'
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(json.dumps({
+            'cpu_slots': max(1, os.cpu_count() or 1),
+            'max_running_tasks': 3,
+            'gpu_devices': [{'id': 'gpu0', 'backend': 'cuda', 'selector': 'GPU-test'}],
+        }))
+        from recon_workbench.task_runtime.resources import DeviceObservation, NvidiaSmiProbe
+        self.gpu_probe_patch = patch.object(
+            NvidiaSmiProbe, '__call__',
+            return_value={'status': 'available', 'error': None,
+                          'devices': [DeviceObservation(selector='0', uuid='GPU-test')]},
+        )
+        self.gpu_probe_patch.start()
         self.patch = patch.object(app, 'ROOT', self.root)
         self.patch.start()
         self.start_server()
@@ -188,6 +203,7 @@ class PersistentApiTests(unittest.TestCase):
     def tearDown(self):
         self.stop_server()
         self.patch.stop()
+        self.gpu_probe_patch.stop()
         self.temp.cleanup()
 
     def request(self, path, data=None, raw=None, token=True):
@@ -201,6 +217,16 @@ class PersistentApiTests(unittest.TestCase):
             return response.status, json.loads(content) if response.headers.get('Content-Type','').startswith('application/json') else content
         finally:
             connection.close()
+
+    def test_resource_and_queue_resume_api(self):
+        code, resources = self.request('/api/resources')
+        self.assertEqual(code, 200)
+        self.assertGreaterEqual(resources['cpu']['total_slots'], 1)
+        self.assertEqual(resources['cpu']['allocated_slots'], 0)
+        self.assertEqual(resources['gpus'][0]['probe_status'], 'available')
+        code, resumed = self.request('/api/queue-resume', {})
+        self.assertEqual(code, 200)
+        self.assertFalse(resumed['dispatch_paused'])
 
     def test_project_upload_and_preview_api_survive_restart(self):
         self.assertEqual(self.request('/api/projects', {'name':'blocked'}, token=False)[0], 403)

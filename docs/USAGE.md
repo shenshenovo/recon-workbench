@@ -463,7 +463,7 @@ python3 app.py
 
 已有实验启动时自动登记到“默认项目 / 历史实验”，原始文件不改写。旧记录优先采用状态文件的开始时间，缺失时使用文件夹修改时间。CLI 新结果在下次服务启动时登记。任务完成状态由后台线程保存，不依赖页面是否打开。正常 Ctrl+C 会停止任务；异常退出后再启动，未正常结束的任务标记“已中断”，不会自动续跑或控制旧 PID。
 
-同一项目目录只能启动一个服务。这里仍是本地单用户工作台，账户、并行队列、网页网格/高斯渲染和模型下载属于后续任务。
+同一项目目录只能启动一个服务。服务支持持久化队列、按任务取消和 CPU/GPU 预算下的并行调度；账户、网页网格/高斯渲染和模型下载属于后续任务；阶段恢复与离线备份恢复已由 PR3 提供。直接 CLI 独立执行，不进入服务队列。
 
 验证命令：
 
@@ -492,3 +492,18 @@ python3 -m unittest
 实现说明：本项目负责调用、参数适配、任务状态、产物管理和统计；SfM 算法由 COLMAP 执行。
 
 - [OpenMVS 与 COLMAP 接口及完整流程](https://github.com/cdcseacave/openMVS/wiki/Usage)
+
+
+### 失败阶段与离线备份恢复
+
+失败/中断任务先向 `POST /api/task-resume-check` 发送 `{"task_id":"任务ID"}`，读取复用、重做及阻塞说明，再向 `POST /api/task-resume` 提交相同 ID 与 `plan_fingerprint`。两者均要求本地 token。恢复沿用固定输入和参数，创建独立 attempt；只有成功后才切换结果输出目录，旧日志与产物保留。SfM 与 Fast3R 从整段起点重跑，MVS 可在 dense/mesh 边界后恢复，3DGS 训练从起点重跑。
+
+停止服务且确认没有残留计算后执行：
+
+```bash
+python -m recon_workbench.task_runtime.backup create --workspace "$PWD" --archive ../workspace-backup.tar.gz
+python -m recon_workbench.task_runtime.backup verify --archive ../workspace-backup.tar.gz
+python -m recon_workbench.task_runtime.backup restore --archive ../workspace-backup.tar.gz --target ../restored-workspace
+```
+
+目标必须不存在，归档不包含源码、虚拟环境、算法工具和模型权重。首版只接受 data/outputs 内资产；范围外路径或缺照片/模型会明确失败。恢复后把匹配版本源码安装到新根目录，配置工具和资源；原排队任务标为 interrupted，逐项预检恢复以重建命令，最后调用 `/api/queue-resume` 解除暂停。真实 COLMAP/OpenMVS/Brush/Fast3R 恢复仍需在实际环境验收，自动化测试不代表算法质量结论。

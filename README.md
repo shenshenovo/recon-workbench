@@ -108,4 +108,4 @@ python -m unittest tests.test_image_quality
 
 协作时按模块建立分支，通过 Pull Request 合并。源码在 `recon_workbench/`，测试放入 `tests/`，接口变更同步更新 `docs/COLLABORATION.md`。GitHub 不包含照片、模型、数据库、外部工具或虚拟环境；组员需各自配置本机环境。
 
-当前尚未实现账号权限、并行任务队列、网页网格/高斯渲染和模型下载。质量提示属于启发式检查；没有几何真值或统一评估条件时，不据此宣称重建精度提升。
+当前任务队列支持持久化 FIFO、按 CPU 额度和整卡 GPU 独占的服务内并行调度、经校验的失败阶段恢复和离线备份恢复（见 task_runtime/docs/api.md）；账号权限、网页网格/高斯渲染和模型下载仍未实现。GPU 设备需要在 `data/task_runtime/resources.json` 中显式配置并通过设备探测；直接 CLI 不进入服务资源账本。质量提示属于启发式检查；没有几何真值或统一评估条件时，不据此宣称重建精度提升。

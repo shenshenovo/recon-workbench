@@ -222,8 +222,11 @@ class Pipeline:
                 if terminal:
                     import pty
                     master, slave = pty.openpty()
+                # 服务队列中的所有层（含 PTY）继承包装器进程组。
+                # 独立 CLI 仍建立自己的会话并逐级传播取消信号。
+                owned = os.environ.get('RECON_RUNTIME_OWNED') == '1'
                 process = subprocess.Popen(command, stdout=slave if terminal else log, stderr=subprocess.STDOUT,
-                                           cwd=str(cwd or self.output), start_new_session=True, env=env)
+                                           cwd=str(cwd or self.output), start_new_session=not owned, env=env)
                 if terminal:
                     os.close(slave)
                     slave = None
@@ -261,11 +264,15 @@ class Pipeline:
             stage["status"] = "completed"
         except KeyboardInterrupt:
             if process is not None and process.poll() is None:
-                os.killpg(process.pid, signal.SIGINT)
+                if os.environ.get('RECON_RUNTIME_OWNED') != '1':
+                    os.killpg(process.pid, signal.SIGINT)
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    if os.environ.get('RECON_RUNTIME_OWNED') == '1':
+                        process.kill()
+                    else:
+                        os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
             stage["status"] = "cancelled"
             raise
