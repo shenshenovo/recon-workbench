@@ -1,17 +1,37 @@
 """Explainable image checks and immutable, selected inputs for reconstruction."""
 import hashlib
 import io
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 import json
 import math
 from pathlib import Path
 import shutil
 
+from .image_similarity import (algorithm_metadata, compare_pair, dhash, hash_library, phash,
+                               similarity_report)
 
-VERSION = 'quality-v1'
+
+VERSION = 'quality-v2'
 DEFAULTS = {'max_side': 512, 'blur_threshold': 60.0, 'dark_mean': 40.0,
-            'bright_mean': 215.0, 'clipped_ratio': 0.6, 'near_distance': 4}
+            'bright_mean': 215.0, 'clipped_ratio': 0.6, 'near_distance': 4,
+            'phash_distance': 6, 'min_luminance_std': 8, 'max_mean_delta': 10,
+            'max_aspect_delta': 0.02}
 MAX_BYTES = 64 * 1024**2
+
+
+def runtime_versions():
+    return {key + '_version': version(package) for key, package in
+            (('pillow', 'Pillow'), ('imagehash', 'ImageHash'), ('numpy', 'numpy'), ('scipy', 'scipy'))}
+
+
+def report_is_current(report):
+    if not report or report.get('version') != VERSION:
+        return False
+    try:
+        return (all(report.get(key) == value for key, value in runtime_versions().items())
+                and report.get('algorithms') == algorithm_metadata(report['policy']))
+    except (KeyError, TypeError, PackageNotFoundError):
+        return False
 
 
 def pillow():
@@ -24,8 +44,9 @@ def pillow():
 
 def policy(values=None):
     result = dict(DEFAULTS)
-    values = values or {}
-    if not isinstance(values, dict) or not set(values) <= {'blur_threshold', 'dark_mean', 'bright_mean', 'near_distance'}:
+    values = {} if values is None else values
+    if not isinstance(values, dict) or not set(values) <= {
+            'blur_threshold', 'dark_mean', 'bright_mean', 'near_distance', 'phash_distance'}:
         raise ValueError('检测参数无效。')
     for key, value in values.items():
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -35,6 +56,8 @@ def policy(values=None):
         raise ValueError('模糊阈值需在 0～100000，亮度阈值需满足 0 ≤ 暗阈值 < 亮阈值 ≤ 255。')
     if not isinstance(result['near_distance'], int) or not 0 <= result['near_distance'] <= 8:
         raise ValueError('相似哈希距离需为 0～8 的整数。')
+    if not isinstance(result['phash_distance'], int) or not 0 <= result['phash_distance'] <= 16:
+        raise ValueError('pHash 距离需为 0～16 的整数。')
     return result
 
 
@@ -72,24 +95,21 @@ def metrics(data, settings):
             total += value
             squares += value * value
     sharpness = max(0, squares / interior - (total / interior)**2) if interior else 0.0
-    small = gray.resize((9, 8), Image.Resampling.LANCZOS).tobytes()
-    bits = 0
-    for y in range(8):
-        for x in range(8):
-            bits = (bits << 1) | (small[y*9+x] > small[y*9+x+1])
     return {'width': width, 'height': height, 'analysis_width': w, 'analysis_height': h,
             'laplacian_variance': round(sharpness, 4), 'mean_luminance': round(mean, 4),
             'luminance_std': round(std, 4), 'dark_ratio': round(sum(histogram[:21]) / count, 6),
-            'bright_ratio': round(sum(histogram[235:]) / count, 6), 'dhash': format(bits, '016x')}
+            'bright_ratio': round(sum(histogram[235:]) / count, 6),
+            'dhash': dhash(gray), 'phash': phash(gray)}
 
 
 def analyze(root, images, thresholds=None):
     Image, _ = pillow()  # Missing dependency is a request error, not 500 decode errors.
+    hash_library()
     settings = policy(thresholds)
     if not images or len(images) > 500:
         raise ValueError('请选择含 1～500 张 JPG/PNG 的原始图片集。')
     root = Path(root).resolve()
-    results, hashes, candidates = [], {}, []
+    results, hashes = [], {}
     for image in sorted(images, key=lambda item: item['name']):
         item = {'name': image['name'], 'path': image['path'], 'sha256': None,
                 'bytes': None, 'decodable': False, 'flags': [], 'duplicate_of': None, 'similar_to': None}
@@ -115,29 +135,25 @@ def analyze(root, images, thresholds=None):
             item['duplicate_of'] = hashes[item['sha256']]
         else:
             hashes[item['sha256']] = item['name']
-            # Low texture and very different exposure/aspect ratios are unreliable matches.
-            if item['luminance_std'] >= 8:
-                for previous in candidates:
-                    if abs(item['width']/item['height'] / (previous['width']/previous['height']) - 1) > 0.02:
-                        continue
-                    distance = (int(item['dhash'], 16) ^ int(previous['dhash'], 16)).bit_count()
-                    if distance <= settings['near_distance'] and abs(item['mean_luminance'] - previous['mean_luminance']) <= 10:
-                        item['flags'].append('near_duplicate')
-                        item['similar_to'] = previous['name']
-                        item['hash_distance'] = distance
-                        break
-                candidates.append(item)
         results.append(item)
-    identity = {'version': VERSION, 'pillow_version': version('Pillow'), 'policy': settings,
+    evidence = similarity_report(results, settings)
+    pair_counts = evidence.pop('pair_counts')
+    versions = runtime_versions()
+    identity = {'version': VERSION, **versions, 'policy': settings,
+                'algorithms': evidence['algorithms'],
                 'files': [(item['name'], item['sha256']) for item in results]}
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    return {'version': VERSION, 'pillow_version': identity['pillow_version'], 'policy': settings, 'fingerprint': fingerprint, 'images': results,
+    return {'version': VERSION, **versions, 'policy': settings,
+            'fingerprint': fingerprint, 'images': results, **evidence,
             'counts': {'total': len(results), 'decodable': sum(item['decodable'] for item in results),
+                       **pair_counts,
                        **{flag: sum(flag in item['flags'] for item in results) for flag in
                           ('decode_error', 'blurry', 'underexposed', 'overexposed', 'exact_duplicate', 'near_duplicate')}}}
 
 
 def validate_selection(report, names, fingerprint):
+    if not report_is_current(report):
+        raise ValueError('检测算法或依赖版本已变化，请重新检测并确认筛选。')
     if not report or report['fingerprint'] != fingerprint:
         raise ValueError('检测报告已变化，请重新查看检测结果。')
     if not isinstance(names, list) or not all(isinstance(name, str) for name in names) or len(set(names)) != len(names):

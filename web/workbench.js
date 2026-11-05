@@ -277,6 +277,7 @@ function saveDraft() {
       "quality-dark",
       "quality-bright",
       "quality-near",
+      "quality-phash",
     ].map((id) => $(id).value);
   }
   sessionStorage.setItem(
@@ -322,14 +323,18 @@ async function restoreDraft() {
         ),
       );
       qualityDirty = true;
-      qualityPolicyDirty = !!draft.policyDirty;
+      qualityPolicyDirty =
+        !!draft.policyDirty || !!qualityState.requires_reanalysis;
       if (draft.thresholds)
         [
           "quality-blur",
           "quality-dark",
           "quality-bright",
           "quality-near",
-        ].forEach((id, i) => ($(id).value = draft.thresholds[i]));
+          "quality-phash",
+        ].forEach((id, i) => {
+          if (draft.thresholds[i] != null) $(id).value = draft.thresholds[i];
+        });
       renderQuality();
     }
   }

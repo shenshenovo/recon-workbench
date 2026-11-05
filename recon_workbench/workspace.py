@@ -124,7 +124,7 @@ class Workspace:
                             width, height = image_size(image)
                         except (ValueError, OSError):
                             width, height = None, None
-                        images.append({'name': str(image.relative_to(image_root)), 'path': relative,
+                        images.append({'name': image.relative_to(image_root).as_posix(), 'path': relative,
                                        'width': width, 'height': height, 'bytes': image.stat().st_size})
         set_id = uuid.uuid4().hex
         with self.connect() as db:
@@ -136,9 +136,10 @@ class Workspace:
         return self.image_set(set_id)
 
     def image_set(self, set_id):
+        from .image_quality import report_is_current
         with self.connect() as db:
             row = db.execute('SELECT * FROM image_sets WHERE id=?', (set_id,)).fetchone()
-            review = db.execute('''SELECT s.names FROM quality_reports q
+            review = db.execute('''SELECT s.names, q.report FROM quality_reports q
                 LEFT JOIN image_selections s ON s.image_set_id=q.image_set_id
                 WHERE q.image_set_id=?''', (set_id,)).fetchone()
         if not row:
@@ -146,7 +147,8 @@ class Workspace:
         result = dict(row)
         result['images'] = json.loads(result['images'])
         result['count'] = len(result['images'])
-        result['selected_count'] = len(json.loads(review['names'])) if review and review['names'] is not None else None
+        reviewed = review and report_is_current(json.loads(review['report']))
+        result['selected_count'] = len(json.loads(review['names'])) if reviewed and review['names'] is not None else None
         result['selection_status'] = ('not_applicable' if result['input_type'] != 'images' else
                                       'saved' if result['selected_count'] is not None else
                                       'pending' if review else 'unchecked')
@@ -165,15 +167,18 @@ class Workspace:
             db.execute('DELETE FROM image_selections WHERE image_set_id=?', (set_id,))
 
     def quality_state(self, set_id):
+        from .image_quality import report_is_current
         image_set = self.image_set(set_id)
         with self.connect() as db:
             report = db.execute('SELECT * FROM quality_reports WHERE image_set_id=?', (set_id,)).fetchone()
             selection = db.execute('SELECT * FROM image_selections WHERE image_set_id=?', (set_id,)).fetchone()
+        document = json.loads(report['report']) if report else None
+        requires_reanalysis = bool(document and not report_is_current(document))
         return {'image_set_id': set_id, 'supported': image_set['input_type'] == 'images',
-                'report': json.loads(report['report']) if report else None,
+                'report': document, 'requires_reanalysis': requires_reanalysis,
                 'analyzed_at': report['updated_at'] if report else None,
                 'selection': {'fingerprint': selection['fingerprint'], 'names': json.loads(selection['names']),
-                              'updated_at': selection['updated_at']} if selection else None}
+                              'updated_at': selection['updated_at']} if selection and not requires_reanalysis else None}
 
     def analyze_images(self, set_id, thresholds=None):
         from .image_quality import analyze
@@ -186,7 +191,7 @@ class Workspace:
             images = []
             for path in sorted(base.rglob('*')):
                 if path.is_file() and path.suffix.lower() in ('.jpg', '.jpeg', '.png'):
-                    images.append({'name': str(path.relative_to(base)), 'path': self.relative(path),
+                    images.append({'name': path.relative_to(base).as_posix(), 'path': self.relative(path),
                                    'bytes': path.stat().st_size})
                     if len(images) > 500:
                         raise ValueError('单个图片集最多检测 500 张图片。')
