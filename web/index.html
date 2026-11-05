@@ -346,13 +346,25 @@
                     />
                   </div>
                   <div>
-                    <label for="quality-near">相似哈希距离</label
+                    <label for="quality-near">dHash 距离阈值</label
                     ><input
                       id="quality-near"
                       type="number"
                       min="0"
                       max="8"
+                      step="1"
                       value="4"
+                    />
+                  </div>
+                  <div>
+                    <label for="quality-phash">pHash 距离阈值</label
+                    ><input
+                      id="quality-phash"
+                      type="number"
+                      min="0"
+                      max="16"
+                      step="1"
+                      value="6"
                     />
                   </div>
                 </div>
@@ -380,7 +392,7 @@
                 </div>
                 <p class="note">
                   清晰度分数为最长边缩至 512 像素后的拉普拉斯方差；亮度范围
-                  0～255。调整阈值后需重新检测。
+                  0～255。dHash / pHash 为 64 位汉明距离，越小越相似，不代表概率；两者均命中且符合共同条件时提示疑似相似。调整阈值后需重新检测。
                 </p>
               </details>
               <p id="quality-summary" class="note">尚未检测原始照片。</p>
@@ -416,6 +428,34 @@
                 <p class="note">
                   低清晰度分数也可能来自白墙等少纹理区域；哈希相似不代表视角冗余。请保留足够重叠的视角。筛选仅影响本次输入副本；表格可横向滚动。
                 </p>
+                <details id="quality-pair-details">
+                  <summary>图片对与算法判定</summary>
+                  <p id="quality-pair-summary" class="note"></p>
+                  <div id="quality-pair-tools" class="viewer-tools">
+                    <label for="quality-pair-filter">图片对</label>
+                    <select id="quality-pair-filter">
+                      <option value="all">全部已展示图片对</option>
+                      <option value="matches">疑似相似</option>
+                      <option value="disagree">两算法不一致</option>
+                      <option value="excluded">共同条件不符</option>
+                    </select>
+                  </div>
+                  <p id="quality-pair-empty" class="note" hidden></p>
+                  <div id="quality-pair-table" class="table-wrap">
+                    <table class="quality-pairs">
+                      <thead>
+                        <tr>
+                          <th>图片对</th>
+                          <th>共同条件</th>
+                          <th>dHash 距离 / 阈值</th>
+                          <th>pHash 距离 / 阈值</th>
+                          <th>最终判定</th>
+                        </tr>
+                      </thead>
+                      <tbody id="quality-pair-rows"></tbody>
+                    </table>
+                  </div>
+                </details>
               </div>
             </section>
           </section>

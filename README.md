@@ -47,6 +47,7 @@ recon-workbench/
 │   ├── fast3r.py           # 可选 CUDA Fast3R 推理与点云导出
 │   ├── workspace.py        # 项目、图片集、任务和模型持久化
 │   ├── image_quality.py    # 图片检测、筛选和输入快照
+│   ├── image_similarity.py # dHash/pHash 配对比较与判定证据
 │   ├── evaluate.py         # 指标整理、对比报告
 │   ├── pointcloud.py       # 网页点云数据
 │   ├── ply_compatible.py   # PLY 格式适配
@@ -55,7 +56,7 @@ recon-workbench/
 ├── tests/                  # 自动化测试
 ├── scripts/                # 样例生成等辅助工具
 ├── docs/                   # 使用指南、协作接口、手动验收
-├── requirements.txt        # 图片处理依赖 Pillow
+├── requirements.txt        # 图片质量检测依赖 Pillow / ImageHash
 ├── data/                   # 本机照片、数据库、筛选快照（不提交）
 ├── outputs/                # 本机模型、日志、报告（不提交）
 └── .tools/                 # 本机 OpenMVS / Brush（不提交）
@@ -98,6 +99,7 @@ python -m unittest tests.test_image_quality
 - [完整使用指南](docs/USAGE.md)：安装、数据集、各条路线、参数与已有实测说明。
 - [模块、接口与协作约定](docs/COLLABORATION.md)：模块分工、HTTP/CLI、状态与文件格式。
 - [图片质量检测手动验收](docs/TESTING_QUALITY.md)：生成样例、筛选、重启恢复和实际输入校验。
+- [图片质量任务验收清单](docs/QUALITY_DELIVERY.md)：任务要求、代码与测试对应关系、最终实验结论和审查结果。
 - [页面逻辑与测试扩展规划](docs/UI_PLAN.md)：三页职责、页面验收、正式实验与数据集候选。
 - [数据集选择与分层测试计划](docs/DATASET_TEST_PLAN.md)：三个真实场景、下载入口、数量阶梯、损坏与退化样例及结果记录。
 - [Fast3R GPU 运行指南](docs/FAST3R.md)：独立 CUDA 环境、8GB 显存的小样例和输出说明。

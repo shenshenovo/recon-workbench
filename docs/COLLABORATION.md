@@ -83,6 +83,8 @@ python3 main.py --method 3dgs --dataset Brush数据集目录 --output 新任务�
 
 工作台草稿按项目保存在当前标签 sessionStorage；包括输入、参数、未保存勾选及检测阈值。恢复未保存勾选时先核对报告指纹；仍需明确保存后才能启动。页面跳转不调用取消接口；所有页面通过 `/api/job` 提供运行任务的返回入口。
 
+检测或保存筛选请求期间，页面禁用检测阈值、图片表与配对表的勾选、全选、排除完全重复和取消全选；筛选显示或重新渲染不会解除这些限制。请求成功或失败后恢复可编辑状态，旧报告仍按重检要求限制保存。切换图片集后，旧请求的响应和错误不会覆盖当前图片集状态。
+
 | 方法与路径 | 请求 | 响应 |
 | --- | --- | --- |
 | GET `/api/runs?project_id=...` | 项目 ID 可省略 | 已完成任务数组，包含原有 `id`、新增 `task_id`/`project_id`、指标和评估曲线 |
@@ -102,7 +104,7 @@ python3 main.py --method 3dgs --dataset Brush数据集目录 --output 新任务�
 | POST `/api/project-rename` | `{"id":"项目ID","name":"新名称"}` | 修改后的项目 |
 | GET `/api/project?id=...` | 项目 ID | 项目资料与 `image_sets`, `tasks`, `models` |
 | POST `/api/image-sets` | `project_id`, `path`, `input_type`, 可选 `name` | 登记已有项目内输入目录；返回图片集记录 |
-| GET `/api/source-image?set=...&name=...` | 图片集 ID 和记录中的图片名 | 该图片集的 JPG/PNG 字节 |
+| GET `/api/source-image?set=...&name=...` | 图片集 ID 和记录中的图片名；可选 `preview=1` | 默认返回原始 JPG/PNG 字节；`preview=1` 返回最长边不超过 320 像素的 JPEG 预览 |
 | GET `/api/tasks?project_id=...` | 项目 ID 可省略 | 全部状态的任务数组 |
 | GET `/api/task?id=...` | 稳定任务 ID | 任务记录、`states`, `log_text` 与模型记录 |
 | GET `/api/quality?image_set_id=...` | 原始图片集 ID | `image_set_id`, `supported`, `report`, `analyzed_at`, `selection` |
@@ -147,15 +149,17 @@ CLI 对应 `--camera-model`、`--camera-params`、`--single-camera`，统一入�
 
 **原始照片启动接口变化：** 网页/HTTP 的 `images` 输入必须先检测并保存筛选，否则 `/api/start` 返回 400。先由上传或 `/api/image-sets` 得到图片集 ID，再调用 `/api/quality-analyze`，使用返回的 `report.fingerprint` 和选中 `names` 调用 `/api/image-selection`，最后 `/api/start` 传入 `project_id`、`image_set_id` 与路线参数。`dataset` / `sfm-output` 输入及原有 CLI 不受此门槛影响。
 
-检测阈值 `thresholds` 可包含 `blur_threshold`（默认 60）、`dark_mean`（40）、`bright_mean`（215）、`near_distance`（整数 4）。分析尺度固定为最长边最多 512；截断暗/亮像素门限分别为灰度 ≤20 / ≥235，占比阈值为 0.6；SHA-256 相同才标为文件完全重复。dHash 距离只对亮度差 ≤10、宽高比差 ≤2%、灰度标准差 ≥8 的候选匹配，不作为自动剔除条件。
+质量报告版本为 `quality-v2`。检测阈值 `thresholds` 可包含 `blur_threshold`（默认 60）、`dark_mean`（40）、`bright_mean`（215）、`near_distance`（整数 4）和 `phash_distance`（整数 6）。分析尺度固定为最长边最多 512；灰度 ≤20 / ≥235 分别计入暗/亮截断像素，占比达到 0.6 时提示曝光异常。SHA-256 相同才标为文件完全重复；完全重复、不可解码图片不作为相似候选。
 
-报告 `report` 包含 `version`, `pillow_version`, `policy`, `fingerprint`, `counts`, `images`。每张图片有 `name`, `path`, `sha256`, `bytes`, `decodable`, `flags`，可解码时还有尺寸、`laplacian_variance`, `mean_luminance`, `dark_ratio`, `bright_ratio`, `dhash` 等；重复项有 `duplicate_of`，相似项有 `similar_to`/`hash_distance`。标志为 `decode_error`, `blurry`, `underexposed`, `overexposed`, `exact_duplicate`, `near_duplicate`。这些标志可重叠，不是质量排名或经过标定的错误概率。
+相似检测在最多 500 张图片范围内，对所有可解码、非完全重复图片对全量比较，不进行图片对抽样。每对均计算 64 位 dHash 与 pHash 汉明距离；只有两张图的灰度标准差均不低于 8、宽高比相差不超过 2%、平均亮度差不超过 10，才符合参与相似判定的共同条件。符合条件且 dHash 距离 ≤4、pHash 距离 ≤6 才联合标为 `near_duplicate`（AND）。这两个距离分别返回，不合成为概率或单一分数。计算会遍历全部图片对并统计命中数，报告 `pairs` 最多保留 200 对，命中优先、稳定排序；该上限只截断展示证据，不截断计算，也不是随机抽样。
 
-新增 `quality_reports` / `image_selections` 表，启动时通过 `CREATE TABLE IF NOT EXISTS` 扩展已有数据库，不删除原记录。`selection` 包含 `fingerprint`, `names`, `updated_at`；首次分析不自动确认。重复检测内容和阈值均未变化时保留确认；变化后清除确认。追加上传会同时清除旧报告与确认。保存筛选拒绝重复、未知和不可解码图片名；修改文件在启动复制时按内容哈希再次校验。
+报告 `report` 包含 `version`, `pillow_version`, `imagehash_version`, `numpy_version`, `scipy_version`, `policy`, `fingerprint`, `algorithms`, `pair_sampling`, `counts`, `images`, `pairs`。`algorithms` 记录 dHash、pHash 的位数、阈值、实现、联合判定方式，以及逐图证据采用 `nearest_prior_match`；共同条件实现标识为 `eligibility: symmetric-aspect-integer-ratio-v2`，用整数尺寸比例比较处理恰好 2% 的宽高比边界。报告结构仍为 `quality-v2`；缺少或不匹配此算法元数据的旧报告须重新检测并保存筛选。`pair_sampling` 记录 `strategy`（`all_unique_pairs`）、`display_limit`、`truncated`。`counts` 包含 `compared_pairs`, `eligible_pairs`, `dhash_pairs`, `phash_pairs`, `near_duplicate_pairs`, `displayed_pairs` 及逐图问题计数。每张图片有 `name`, `path`, `sha256`, `bytes`, `decodable`, `flags`，可解码时还有尺寸、`laplacian_variance`, `mean_luminance`, `dark_ratio`, `bright_ratio`, `dhash`, `phash` 等；完全重复项有 `duplicate_of`，相似项有 `similar_to`, `hash_distance`（dHash 汉明距离）及 `phash_distance`，表示该图在按名称更早的命中候选中距离最小的一对。每个 `pairs` 条目记录 `a`, `b`, `eligible`, `exclusion_reasons`, `dhash_distance`, `phash_distance`, `dhash_match`, `phash_match`, `match`。标志可重叠，不是质量排名、人工标签或经过标定的错误概率。
+
+新增 `quality_reports` / `image_selections` 表，启动时通过 `CREATE TABLE IF NOT EXISTS` 扩展已有数据库，不删除原记录。`selection` 包含 `fingerprint`, `names`, `updated_at`；首次分析不自动确认。内容、阈值、质量算法版本或 Pillow、ImageHash、NumPy、SciPy 任一运行时依赖版本变化时，指纹或当前性校验会使旧确认失效，必须重新检测并由用户再次确认。变化后清除旧确认；追加上传会同时清除旧报告与确认。保存筛选拒绝重复、未知和不可解码图片名；修改文件在启动复制时按内容哈希再次校验。
 
 网页任务使用 `data/task_inputs/任务目录名/images/` 中的独立副本，保留相对子目录与原始字节；同级 `selection.json` 保存来源、文件名单和哈希，`quality.json` 保存当次完整报告。任务 `parameters` 新增 `source_input`, `selected_images`, `quality_fingerprint`, `quality_manifest`，`input` 指向实际副本，`command` 也使用副本路径。不能以只记录前端勾选、却仍把整个原目录交给 COLMAP 的方式实现筛选。
 
-同一进程的检测、筛选保存、上传写入与输入复制使用锁避免内部状态竞争；工作区外部的文件修改则在复制时通过哈希检测。图片集和模型仍是本地资源关联，当前没有账号权限控制。质量接口需要 Pillow，组员先在虚拟环境中安装 `requirements.txt`，测试见 `TESTING_QUALITY.md`。
+同一进程的检测、筛选保存、上传写入与输入复制使用锁避免内部状态竞争；复制时通过哈希检查已选文件的外部修改。外部新增图片或修改未选图片不触发后台全目录扫描，需主动重新检测以更新名单和指纹。图片集和模型仍是本地资源关联，当前没有账号权限控制。质量接口需要 Pillow 和 ImageHash（后者会带入 NumPy、SciPy 等传递依赖），组员先在虚拟环境中安装 `requirements.txt`，测试见 `TESTING_QUALITY.md`。
 
 任务保存 `parameters`, `command`, `output`, `log`, `pid`, `returncode`, `error`, `stage`, `elapsed` 和时间字段。状态为 `starting` / `running` / `completed` / `failed` / `cancelled` / `interrupted`。后台线程在子进程退出后保存最终状态，不依赖浏览器轮询。正常 Ctrl+C 会停止当前任务并保存结果；异常关闭后，下次启动读取原始任务状态：已有完成/失败/取消结果据实恢复，其他未结束任务标记 `interrupted`。不会根据旧 PID 自动接管或终止进程；异常关闭后原进程可能仍在运行，需检查日志和系统进程，再创建新任务。
 

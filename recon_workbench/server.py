@@ -5,6 +5,7 @@ from contextlib import nullcontext
 import fcntl
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 import mimetypes
 import os
@@ -102,6 +103,24 @@ def tail_log(path, size=16000):
             return evaluate.clean_terminal(stream.read().decode("utf-8", errors="replace"))
     except OSError:
         return ""
+
+
+def preview_bytes(path, max_side=320):
+    """Return a bounded JPEG preview without modifying the source image."""
+    Image, ImageOps = image_quality.pillow()
+    data = image_quality.read_image_bytes(path)
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            if source.format not in ('JPEG', 'PNG') or source.width * source.height > 40_000_000:
+                raise ValueError('仅支持 JPG/PNG，图片像素数不能超过 4000 万。')
+            source.load()
+            image = ImageOps.exif_transpose(source).convert('RGB')
+            image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            image.save(output, format='JPEG', quality=82, optimize=True)
+            return output.getvalue()
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as error:
+        raise ValueError('图片无法生成预览：' + str(error)) from error
 
 
 class Jobs:
@@ -381,6 +400,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not image:
                     raise ValueError('图片不在此图片集中。')
                 path = project_path(image['path'])
+                if query.get('preview', [''])[0] == '1':
+                    return self.respond(preview_bytes(path), content_type='image/jpeg')
                 return self.respond(path.read_bytes(), content_type=mimetypes.guess_type(path.name)[0])
             if url.path == "/api/job":
                 return self.respond(self.server.jobs.snapshot())
