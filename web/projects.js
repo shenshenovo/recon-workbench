@@ -34,7 +34,7 @@ function renderTasks() {
       row,
       button(task.name, () => openTask(task.id), "text-link"),
     );
-    cell(row, task.method);
+    cell(row, task.method + (task.parent_task_id ? " · 父版本 " + task.parent_task_id.slice(0, 8) + " · 补图 " + (task.parameters.selected_images || []).length + " 张" : ""));
     cell(row, statusBadge(task.status));
     cell(row, new Date(task.created_at).toLocaleString());
     cell(row, fmt(task.elapsed));
@@ -127,7 +127,7 @@ async function openTask(id) {
     " · " +
     task.method +
     " · " +
-    task.output;
+    task.output + (task.parent_task_id ? " · 父版本 " + task.parent_task_id : "");
   $("history-error").textContent = task.error || "";
   $("history-params").textContent = JSON.stringify(
     { parameters: task.parameters, command: task.command, stages: task.states },

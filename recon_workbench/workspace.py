@@ -54,6 +54,8 @@ class Workspace:
                     image_set_id TEXT PRIMARY KEY REFERENCES image_sets(id),
                     fingerprint TEXT NOT NULL, names TEXT NOT NULL, updated_at TEXT NOT NULL);
             ''')
+            if 'parent_task_id' not in {row[1] for row in db.execute('PRAGMA table_info(tasks)')}:
+                db.execute('ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id)')
             db.execute('INSERT OR IGNORE INTO projects VALUES (?, ?, ?)',
                        ('default', '默认项目 / 历史实验', now()))
 
@@ -230,6 +232,8 @@ class Workspace:
                 (task_id, project_id, set_id, label(name), method, status, self.relative(output),
                  self.relative(log) if log else None, json.dumps(parameters, ensure_ascii=False),
                  json.dumps(list(command)), now()))
+            if parameters.get('parent_task_id'):
+                db.execute('UPDATE tasks SET parent_task_id=? WHERE id=?', (parameters['parent_task_id'], task_id))
         return self.task(task_id)
 
     def task(self, task_id):
