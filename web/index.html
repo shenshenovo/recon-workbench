@@ -120,6 +120,9 @@
               <p class="note">基础参数在下方，其他参数可按需展开。</p>
               <label for="name">实验名称</label
               ><input id="name" value="scene" maxlength="60" required />
+              <label for="rebuild-mode">重建模式</label><select id="rebuild-mode"><option value="full">全量重建</option><option value="extend">扩展已有 SfM</option></select>
+              <label for="parent-task">父版本（扩展模式必选）</label><select id="parent-task"><option value="">请选择</option></select>
+              <p>照片 → SfM（相机与稀疏点云）→ MVS（稠密几何）或 3DGS（渲染）。Fast3R 独立输出点云。</p>
               <label for="method">重建路线</label
               ><select id="method">
                 <option value="3dgs">3DGS · 高斯场景</option>

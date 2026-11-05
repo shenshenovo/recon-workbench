@@ -29,6 +29,8 @@
 
 ## 2. 统一 CLI 接口
 
+补图版本接口：`--method sfm --images 新照片 --base-sfm 父任务目录`。HTTP 使用 `parent_task_id`，SQLite tasks 保存同名可空字段。摘要新增 `images_path`，增量增加 `base_sfm`、`added_images`、`added_registered_images`。旧任务不含输入指纹时需重建基线。详见 [增量 SfM](INCREMENTAL_SFM.md)。
+
 ```bash
 python3 main.py --method sfm --images 图片目录 --output 新任务目录
 python3 main.py --method mvs --sfm-output 已有SfM目录 --output 新任务目录

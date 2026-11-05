@@ -95,6 +95,9 @@ python -m unittest tests.test_image_quality
 
 ## 文档与协作
 
+- [周政炀交付与验收索引](docs/ZHOU_DELIVERY.md)：路线选择、增量版本、50→70 对照、下游实测与集成注意事项。
+- 补图扩展：`python main.py --method sfm --images data/新照片 --base-sfm outputs/父任务 --output outputs/新版本`。网页选择“扩展已有 SfM”，选择父任务并保存补图质量筛选；每次生成独立版本，旧模型保留。详见 [增量设计](docs/INCREMENTAL_SFM.md)。
+
 - [完整使用指南](docs/USAGE.md)：安装、数据集、各条路线、参数与已有实测说明。
 - [模块、接口与协作约定](docs/COLLABORATION.md)：模块分工、HTTP/CLI、状态与文件格式。
 - [图片质量检测手动验收](docs/TESTING_QUALITY.md)：生成样例、筛选、重启恢复和实际输入校验。

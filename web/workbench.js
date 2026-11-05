@@ -87,7 +87,7 @@ function options() {
   $("training-advanced").hidden = fast;
   const info = methodInfo[$("method").value];
   $("method-title").textContent = info[0];
-  $("method-help").textContent = info[1];
+  $("method-help").textContent = info[1] + ({sfm:" 前置：COLMAP；CPU 特征与匹配，照片多时耗时增加。",mvs:" 前置：COLMAP + OpenMVS；复用 SfM，深度估计消耗内存与磁盘。", "3dgs":" 前置：COLMAP 位姿与 Brush；训练需要 GPU，新版数据重新训练。",fast3r:" 需要独立 CUDA/PyTorch 环境；8GB 显存先从 2～4 张开始。"}[$("method").value]);
 }
 function renderInputSummary() {
   const item = projectData?.image_sets.find(
@@ -397,7 +397,9 @@ $("upload").onclick = async () => {
 };
 $("form").onsubmit = async (event) => {
   event.preventDefault();
+  if ($("rebuild-mode").value === "extend" && ($("method").value !== "sfm" || $("input_type").value !== "images")) { message("扩展模式仅支持照片输入与 SfM 路线。", true); return; }
   const payload = {
+    parent_task_id: $("rebuild-mode").value === "extend" ? $("parent-task").value : null,
     project_id: window.activeProjectId,
     image_set_id: window.selectedSetId || null,
     name: $("name").value,
@@ -467,7 +469,7 @@ $("point-size").oninput = () => {
 async function renderResult(task) {
   const rows = await api("/api/runs?project_id=" + task.project_id);
   const row = rows.find((row) => row.task_id === task.id);
-  if (!row) return;
+  if (!row) throw new Error("任务已完成，但结果记录不可用。请检查结果目录和服务日志。");
   current = row;
   loadedResult = task.id;
   $("open-folder").hidden = false;
@@ -729,3 +731,25 @@ initShell("reconstruct", loadPage).catch((error) =>
   message(error.message, true),
 );
 setInterval(poll, 2000);
+
+$("rebuild-mode").onchange = async () => {
+  if ($("rebuild-mode").value === "extend") {
+    $("method").value = "sfm";
+    options();
+    const tasks = await api("/api/tasks?project_id=" + window.activeProjectId);
+    $("parent-task").replaceChildren(new Option("请选择父版本", ""));
+    for (const task of tasks.filter(t => t.method === "sfm" && t.status === "completed"))
+      $("parent-task").add(new Option(task.name + " · " + task.id.slice(0, 8), task.id));
+  }
+  $("parent-task").required = $("rebuild-mode").value === "extend";
+};
+
+api('/api/tools').then(tools => {
+  const missing = [];
+  if (!tools.colmap) missing.push('COLMAP 未在 PATH 中找到，SfM 需要安装');
+  if (!tools.DensifyPointCloud) missing.push('OpenMVS 未在 PATH 中找到，MVS 请配置工具目录');
+  if (!tools.brush) missing.push('Brush 未在 PATH 中找到，3DGS 请配置工具路径');
+  const note = document.createElement('p');
+  note.textContent = missing.join('；');
+  $('method').after(note);
+}).catch(() => {});

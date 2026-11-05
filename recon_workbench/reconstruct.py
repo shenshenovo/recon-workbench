@@ -77,6 +77,7 @@ def get_parser():
         description="使用 COLMAP 完成 CPU SfM，可继续调用 OpenMVS 生成稠密点云、网格和纹理。",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument("--base-sfm", type=Path)
     parser.add_argument("--images", type=Path, help="图片目录，递归读取 JPG/PNG/TIFF/BMP")
     parser.add_argument("--output", type=Path, help="新的结果目录，默认 outputs/时间戳")
     parser.add_argument("--colmap", default="colmap", help="COLMAP 可执行文件名称或路径")
@@ -141,13 +142,13 @@ def inspect_colmap(args):
     return executable, options
 
 
-def collect_images(root):
+def collect_images(root, minimum=3):
     if not root.is_dir():
         raise ValueError("图片目录不存在：" + str(root))
     names = sorted(p.relative_to(root).as_posix() for p in root.rglob("*")
                    if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
                    and not any(part.startswith(".") for part in p.relative_to(root).parts))
-    if len(names) < 3:
+    if len(names) < minimum:
         raise ValueError("至少需要 3 张 JPG/PNG/TIFF/BMP 图片；建议使用 20～40 张重叠照片。HEIC 请先转换。")
     if any("\n" in name or "\r" in name for name in names):
         raise ValueError("图片文件名不能包含换行符。")
@@ -164,7 +165,7 @@ def model_count(path):
 
 def select_model(sparse):
     models = []
-    for folder in sorted(sparse.iterdir()):
+    for folder in [sparse] + sorted(sparse.iterdir()):
         if folder.is_dir() and all((folder / name).is_file()
                                    for name in ["images.bin", "points3D.bin", "cameras.bin"]):
             models.append({"path": str(folder), "registered_images": model_count(folder / "images.bin"),
@@ -286,15 +287,41 @@ class Pipeline:
 def reconstruct(args, executable, options, dense_tools=None):
     camera_params = validate_camera_params(args.camera_model, getattr(args, "camera_params", None))
     images = args.images.expanduser().resolve()
-    names = collect_images(images)
+    names = collect_images(images, minimum=1 if getattr(args, "base_sfm", None) else 3)
     output = (args.output or Path("outputs") / datetime.now().strftime("%Y%m%d_%H%M%S_%f")).expanduser().resolve()
     if output == images or images in output.parents:
         raise ValueError("结果目录不能放在输入图片目录内。")
     if output.exists():
         raise ValueError("结果目录已存在，请指定新目录，避免覆盖或混用数据：" + str(output))
+    if getattr(args, 'base_sfm', None):
+        base = args.base_sfm.expanduser().resolve()
+        if output == base or base in output.parents or output in base.parents:
+            raise ValueError('输出目录不能与父版本重叠。')
     output.mkdir(parents=True)
     for directory in ["logs", "sparse", "model_txt"]:
         (output / directory).mkdir()
+    from .incremental import manifest, prepare
+    added = None
+    if getattr(args, 'base_sfm', None):
+        if args.stage != 'sparse':
+            raise ValueError('增量 SfM 仅支持 sparse 阶段。')
+        if '--input_path' not in read_help(executable, 'mapper'):
+            raise ValueError('当前 COLMAP 不支持 mapper --input_path。')
+        images, fingerprints, added = prepare(args.base_sfm, images, names, output)
+        names = list(fingerprints)
+        args.matcher = 'exhaustive'
+    else:
+        fingerprints = manifest(images, names)
+        original = images
+        images = output / 'inputs'
+        images.mkdir()
+        for name in names:
+            target = images / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(original / name, target)
+        if manifest(images, names) != fingerprints:
+            raise ValueError('输入照片在复制期间发生变化。')
+    write_json(output / 'input_manifest.json', fingerprints)
     image_list = output / "image_list.txt"
     image_list.write_text("\n".join(names) + "\n", encoding="utf-8")
     settings = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
@@ -317,6 +344,10 @@ def reconstruct(args, executable, options, dense_tools=None):
                      options["extract_threads"], args.threads, "--SiftExtraction.max_num_features", args.max_features]
         if camera_params:
             extraction.extend(["--ImageReader.camera_params", camera_params])
+        if added:
+            new_list = output / 'added_images.txt'
+            new_list.write_text('\n'.join(added) + '\n', encoding='utf-8')
+            extraction[extraction.index('--image_list_path') + 1] = new_list
         pipeline.run("01_features", extraction)
         matching = [args.matcher + "_matcher", "--database_path", database,
                     options["match_gpu"], 0, options["match_threads"], args.threads]
@@ -325,7 +356,7 @@ def reconstruct(args, executable, options, dense_tools=None):
         pipeline.run("02_matching", matching)
         require_verified_matches(database, args.camera_model)
         pipeline.run("03_mapper", ["mapper", "--database_path", database, "--image_path", images,
-                     "--output_path", output / "sparse", options["mapper_threads"], args.threads])
+                     "--output_path", output / "sparse", options["mapper_threads"], args.threads] + (["--input_path", output / "base_model"] if added else []))
         best, models = select_model(output / "sparse")
         pipeline.run("04_export_txt", ["model_converter", "--input_path", best["path"],
                      "--output_path", output / "model_txt", "--output_type", "TXT"])
@@ -348,6 +379,17 @@ def reconstruct(args, executable, options, dense_tools=None):
                        pointcloud=str(output / "sparse.ply"), camera_model=args.camera_model, device="cpu",
                        completed_stage="sparse")
         write_json(output / "summary.json", summary)
+        summary['images_path'] = str(images)
+        if added:
+            lines = (output / 'model_txt/images.txt').read_text().splitlines()
+            records = [line for line in lines if not line.startswith('#')]
+            registered_names = {' '.join(line.split()[9:]) for line in records[::2] if line.strip()}
+            added_registered = len(set(added) & registered_names)
+            summary.update(base_sfm=str(args.base_sfm.resolve()), added_images=len(added), added_registered_images=added_registered)
+            if not added_registered:
+                raise RuntimeError('新增照片全部未注册，父版本保留。')
+            if added_registered < len(added):
+                warnings.append('部分新增照片未注册。')
         pipeline.state["sparse_summary"] = summary.copy()
         if args.stage != "sparse":
             from .densify import run_dense

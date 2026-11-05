@@ -10,6 +10,7 @@ import mimetypes
 import os
 import re
 from pathlib import Path
+import shutil
 import secrets
 import signal
 import subprocess
@@ -45,6 +46,8 @@ def job_arguments(payload, output):
     if not source.is_dir() or source == ROOT:
         raise ValueError("请选择有效的输入目录。")
     argv = ["--method", method, "--" + input_type, str(source), "--output", str(output)]
+    if payload.get("base_sfm"):
+        argv.extend(["--base-sfm", str(project_path(payload["base_sfm"]))])
     values = {"steps": (5000, 1, 1000000), "max-image-size": (1200, 64, 8192),
               "max-splats": (1000000, 1, 10000000), "threads": (4, 1, 32),
               "eval-every": (1000, 1, 1000000), "export-every": (1000, 1, 1000000),
@@ -132,6 +135,17 @@ class Jobs:
                     if image_set['project_id'] != project_id:
                         raise ValueError('图片集不属于所选项目。')
                     payload.update(input=image_set['path'], input_type=image_set['input_type'])
+            if payload.get('base_sfm'):
+                raise ValueError('网页请使用 parent_task_id 选择父版本。')
+            if payload.get('parent_task_id'):
+                if not self.store:
+                    raise ValueError('增量任务需要项目记录。')
+                parent = self.store.task(payload['parent_task_id'])
+                if parent['project_id'] != project_id or parent['status'] != 'completed' or parent['method'] != 'sfm':
+                    raise ValueError('请选择当前项目已完成的 SfM 父版本。')
+                from .incremental import parent_info
+                base, _, _, _ = parent_info(project_path(parent['output']))
+                payload['base_sfm'] = str(base.relative_to(ROOT))
             output = ROOT / "outputs" / (label + "_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
             argv = job_arguments(payload, output)
             if self.store and image_set is None:
@@ -227,7 +241,7 @@ class Jobs:
                                    "stage": state.get("current_stage"), "elapsed": state.get("elapsed_seconds"),
                                    "error": state.get("error")})
             log = tail_log(self.log)
-            for relative in ("3dgs/logs/03_train.log", "mvs/logs/08_dense.log", "sfm/logs/03_mapper.log", "fast3r/logs/01_inference.log"):
+            for relative in ("3dgs/logs/03_train.log", "mvs/logs/08_dense.log", "sfm/logs/01_features.log", "sfm/logs/02_matching.log", "sfm/logs/03_mapper.log", "fast3r/logs/01_inference.log"):
                 candidate = self.output / relative
                 if candidate.exists():
                     log += "\n" + relative + "\n" + tail_log(candidate)
@@ -300,7 +314,14 @@ class Uploads:
 
 def records(store=None, project_id=None):
     rows = []
-    for folder in evaluate.discover_runs(ROOT / "outputs"):
+    tasks = {task['output']: task for task in store.tasks(project_id)} if store else {}
+    folders = list(evaluate.discover_runs(ROOT / "outputs"))
+    # Registered tasks can live below an experiment group directory.
+    for output in tasks:
+        folder = project_path(output)
+        if folder not in folders:
+            folders.append(folder)
+    for folder in folders:
         try:
             row = evaluate.collect_run(folder)
             row["id"] = str(folder.relative_to(ROOT))
@@ -308,7 +329,6 @@ def records(store=None, project_id=None):
         except (ValueError, OSError, KeyError):
             continue
     if store:
-        tasks = {task['output']: task for task in store.tasks(project_id)}
         rows = [row for row in rows if row['id'] in tasks and tasks[row['id']]['status'] == 'completed']
         for row in rows:
             row.update(task_id=tasks[row['id']]['id'], project_id=tasks[row['id']]['project_id'])
@@ -369,6 +389,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({**project, 'image_sets': self.server.store.image_sets(project_id),
                                      'tasks': self.server.store.tasks(project_id),
                                      'models': self.server.store.models(project_id=project_id)})
+            if url.path == '/api/tools':
+                return self.respond({name: bool(shutil.which(name)) for name in ('colmap', 'DensifyPointCloud', 'brush')})
             if url.path == '/api/tasks':
                 return self.respond(self.server.store.tasks(query.get('project_id', [None])[0]))
             if url.path == '/api/quality':
