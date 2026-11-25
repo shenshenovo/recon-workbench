@@ -221,6 +221,21 @@ class PersistentApiTests(unittest.TestCase):
         self.request('/api/project-rename', {'id':project['id'], 'name':'新名称'})
         self.assertEqual(self.request('/api/project?id=' + project['id'])[1]['name'], '新名称')
 
+    def test_source_image_preview_is_bounded_and_original_remains_available(self):
+        from PIL import Image
+        photos = self.root / 'photos'
+        photos.mkdir()
+        Image.new('RGB', (1200, 800), (80, 120, 160)).save(photos / 'large.png')
+        image_set = self.store.register_set('default', photos)
+        endpoint = '/api/source-image?set=' + image_set['id'] + '&name=large.png'
+        raw_code, raw = self.request(endpoint)
+        preview_code, preview = self.request(endpoint + '&preview=1')
+        self.assertEqual((raw_code, preview_code), (200, 200))
+        self.assertNotEqual(raw, preview)
+        with Image.open(io.BytesIO(preview)) as image:
+            self.assertEqual(image.format, 'JPEG')
+            self.assertLessEqual(max(image.size), 320)
+
     def test_failed_process_is_in_task_history_after_restart(self):
         photos = self.root / 'photos'
         photos.mkdir()

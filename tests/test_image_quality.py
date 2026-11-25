@@ -112,6 +112,57 @@ class QualityTests(unittest.TestCase):
         state = self.store.quality_state(image_set['id'])
         self.assertIsNone(state['report'])
 
+    def test_new_similarity_threshold_and_old_algorithm_invalidate_confirmation(self):
+        self.two_photos()
+        image_set, state = self.analyze()
+        self.store.save_selection(image_set['id'], ['a.png', 'b.png'], state['report']['fingerprint'])
+        updated = self.store.analyze_images(image_set['id'], {'phash_distance': 5})
+        self.assertIsNone(updated['selection'])
+        self.assertNotEqual(state['report']['fingerprint'], updated['report']['fingerprint'])
+        self.store.save_selection(image_set['id'], ['a.png', 'b.png'], updated['report']['fingerprint'])
+        with patch.object(quality, 'VERSION', 'future'):
+            old = self.store.quality_state(image_set['id'])
+            self.assertTrue(old['requires_reanalysis'])
+            self.assertIsNone(old['selection'])
+            self.assertIsNone(self.store.image_set(image_set['id'])['selected_count'])
+            with self.assertRaisesRegex(ValueError, '重新检测'):
+                self.store.save_selection(image_set['id'], ['a.png', 'b.png'], updated['report']['fingerprint'])
+            with patch.object(app, 'ROOT', self.root), patch.object(app.subprocess, 'Popen') as launch:
+                with self.assertRaises(ValueError):
+                    app.Jobs(self.store).start({'method': 'sfm', 'image_set_id': image_set['id']})
+                launch.assert_not_called()
+
+    def test_previous_aspect_rule_requires_reanalysis_and_new_confirmation(self):
+        self.two_photos()
+        image_set, state = self.analyze()
+        report = state['report']
+        self.store.save_selection(image_set['id'], ['a.png', 'b.png'], report['fingerprint'])
+        old_report = dict(report, algorithms=dict(report['algorithms']))
+        old_report['algorithms'].pop('eligibility')
+        old_report['fingerprint'] = 'previous-aspect-fingerprint'
+        with self.store.connect() as db:
+            db.execute('UPDATE quality_reports SET report=? WHERE image_set_id=?',
+                       (json.dumps(old_report), image_set['id']))
+            db.execute('UPDATE image_selections SET fingerprint=? WHERE image_set_id=?',
+                       (old_report['fingerprint'], image_set['id']))
+        old = self.store.quality_state(image_set['id'])
+        self.assertTrue(old['requires_reanalysis'])
+        self.assertIsNone(old['selection'])
+        self.assertIsNone(self.store.image_set(image_set['id'])['selected_count'])
+        with self.assertRaisesRegex(ValueError, '重新检测'):
+            self.store.save_selection(image_set['id'], ['a.png', 'b.png'], old_report['fingerprint'])
+        with patch.object(app, 'ROOT', self.root), patch.object(app.subprocess, 'Popen') as launch:
+            with self.assertRaises(ValueError):
+                app.Jobs(self.store).start({'method': 'sfm', 'image_set_id': image_set['id']})
+            launch.assert_not_called()
+        refreshed = self.store.analyze_images(image_set['id'])
+        self.assertFalse(refreshed['requires_reanalysis'])
+        self.assertNotEqual(old_report['fingerprint'], refreshed['report']['fingerprint'])
+        self.assertIsNone(refreshed['selection'])
+        saved = self.store.save_selection(image_set['id'], ['a.png', 'b.png'],
+                                          refreshed['report']['fingerprint'])
+        self.assertEqual(saved['selection']['names'], ['a.png', 'b.png'])
+
     def test_existing_camera_datasets_cannot_be_filtered(self):
         image_set = self.store.register_set('default', self.photos, 'dataset')
         with self.assertRaisesRegex(ValueError,'仅用于原始照片'):
@@ -124,7 +175,8 @@ class QualityTests(unittest.TestCase):
         _, state = self.analyze()
         destination = self.root / 'snapshots/images'
         files = quality.snapshot(self.root, state['report'], ['b.png','nested/copy.png'], destination)
-        self.assertEqual({str(path.relative_to(destination)) for path in destination.rglob('*.png')}, {'b.png','nested/copy.png'})
+        self.assertEqual({path.relative_to(destination).as_posix() for path in destination.rglob('*.png')},
+                         {'b.png', 'nested/copy.png'})
         self.assertEqual(len(files), 2)
         original = (self.photos / 'b.png').read_bytes()
         (self.photos / 'b.png').write_bytes(b'changed')
@@ -133,6 +185,20 @@ class QualityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'已变化'):
             quality.snapshot(self.root, state['report'], ['a.png','b.png'], failed)
         self.assertFalse(failed.exists())
+
+    def test_nested_image_names_are_portable_and_snapshotable(self):
+        nested = self.photos / 'nested'
+        nested.mkdir()
+        texture().save(nested / 'view.png')
+        texture().transpose(Image.Transpose.FLIP_LEFT_RIGHT).save(self.photos / 'root.png')
+        image_set, state = self.analyze()
+        row = next(item for item in state['report']['images'] if item['name'] == 'nested/view.png')
+        self.assertEqual(row['path'].replace('\\', '/'), 'photos/nested/view.png')
+        names = ['nested/view.png', 'root.png']
+        self.store.save_selection(image_set['id'], names, state['report']['fingerprint'])
+        destination = self.root / 'nested-snapshot/images'
+        quality.snapshot(self.root, state['report'], names, destination)
+        self.assertTrue((destination / 'nested/view.png').is_file())
 
     def test_job_uses_reviewed_snapshot_and_saves_manifest(self):
         self.two_photos()
