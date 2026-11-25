@@ -277,9 +277,15 @@ def main(argv=None):
             copy_verified_mvs_artifacts(args.resume_from, output, resume_check['manifest_fingerprint'])
         print("复用稀疏模型：{}\n输出：{}\n计算：CPU，{} 线程".format(model, output, args.threads), flush=True)
         result = run_dense(pipeline, images, model, args, tools)
+        # A task must publish its own downloadable assets. In particular, an
+        # imported SfM snapshot may reference an older task's PLY or omit it.
+        sparse_ply = output / 'sparse.ply'
+        pipeline.run('11_export_sparse', ['model_converter', '--input_path', model,
+                     '--output_path', sparse_ply, '--output_type', 'PLY'])
+        ply_counts(sparse_ply)
         summary = dict(sparse_summary, **result)
         summary.update(source_sfm=str(source),
-                       sparse_pointcloud=sparse_summary.get("sparse_pointcloud", sparse_summary["pointcloud"]),
+                       sparse_pointcloud=str(sparse_ply),
                        pointcloud=result["dense_pointcloud"], source_sfm_elapsed_seconds=sparse_summary["elapsed_seconds"],
                        elapsed_seconds=round(time.monotonic() - pipeline.started, 3))
         write_json(output / "summary.json", summary)

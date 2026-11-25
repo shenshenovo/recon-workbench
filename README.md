@@ -116,6 +116,7 @@ python -m unittest tests.test_image_quality
 - [两台电脑同步](docs/TWO_COMPUTERS.md)：单人切换电脑、推送拉取及本机环境管理。
 - [后续任务分工](docs/TEAM_TASK_PLAN.md)：四名组员的任务和交付要求。
 - [四个 PR 的集成记录](docs/INTEGRATION_STATUS.md)：集成分支、接口修复、验证及待验收限制。
+- [OpenMVS 纹理导出修复](docs/OPENMVS_TEXTURE_FIX.md)：本机 2.3 版 OBJ 导出崩溃的最小补丁与恢复记录。
 
 协作时按模块建立分支，通过 Pull Request 合并。源码在 `recon_workbench/`，测试放入 `tests/`，接口变更同步更新 `docs/COLLABORATION.md`。GitHub 不包含照片、模型、数据库、外部工具或虚拟环境；组员需各自配置本机环境。
 
