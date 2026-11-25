@@ -156,6 +156,14 @@ preview.mkdir()
         (self.root / 'web' / 'login.js').write_text('// login fixture')
         (self.root / 'main.py').write_text(self.FIXTURE)
         (self.root / 'sfm-run').mkdir()
+        source = self.root / 'sfm-run'
+        (source / 'images').mkdir()
+        (source / 'images/a.png').write_bytes(b'fixture-photo')
+        (source / 'model').mkdir()
+        for name in ('cameras.bin', 'images.bin', 'points3D.bin'):
+            (source / 'model' / name).write_bytes(b'fixture-model')
+        (source / 'config.json').write_text(json.dumps({'images': str(source / 'images')}))
+        (source / 'summary.json').write_text(json.dumps({'selected_model': str(source / 'model')}))
         self.patch = patch.object(app, 'ROOT', self.root)
         self.patch.start()
         self.start_server()
@@ -210,6 +218,18 @@ preview.mkdir()
         self.assertEqual(status, 200, body)
         return body, cookie
 
+    def wait_task(self, task_id, cookie):
+        import time
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            code, task, _ = self.request('/api/task?id=' + task_id, cookie=cookie)
+            self.assertEqual(code, 200, task)
+            if task['status'] in ('completed', 'failed', 'cancelled', 'interrupted'):
+                self.assertEqual(task['status'], 'completed', task)
+                return task
+            time.sleep(.02)
+        self.fail('fixture task did not finish')
+
     def test_api_needs_login_once_an_account_exists(self):
         status, body, _ = self.request('/api/projects')
         self.assertEqual(status, 200)
@@ -249,7 +269,8 @@ preview.mkdir()
         started = self.request('/api/start', {'project_id': project['id'], 'name': 'fixture', 'method': 'mvs',
                                               'input_type': 'sfm-output', 'input': 'sfm-run'},
                                cookie=alice_cookie)[1]
-        self.server.jobs.worker.join(timeout=10)
+        self.assertIn('task_id', started, started)
+        self.wait_task(started['task_id'], alice_cookie)
         detail = self.request('/api/task?id=' + started['task_id'], cookie=alice_cookie)[1]
         self.assertEqual(detail['status'], 'completed')
         model = detail['models'][0]
@@ -278,9 +299,10 @@ preview.mkdir()
                 self.assertIn(status, (400, 403), body)
                 self.assertTrue(body['error'])
         self.assertEqual(self.request('/api/runs', cookie=bob_cookie)[1], [])
-        # 任务槽位只属于运行它的账号：B 看不到状态，也不能取消
+        # 队列按账号收窄：B 看不到 A 的任务，也不能按 ID 取消。
         self.assertNotEqual(self.request('/api/job', cookie=bob_cookie)[1]['status'], 'running')
-        self.assertEqual(self.request('/api/cancel', {}, cookie=bob_cookie)[0], 403)
+        self.assertEqual(self.request('/api/cancel', {'task_id': started['task_id']}, cookie=bob_cookie)[0], 403)
+        self.assertFalse(self.request('/api/cancel', {}, cookie=bob_cookie)[1]['cancel_requested'])
 
         # A 自己的数据仍然可读，模型体积与路径不受隔离影响
         self.assertEqual(self.request('/api/tasks', cookie=alice_cookie)[1][0]['id'], started['task_id'])
@@ -309,7 +331,8 @@ preview.mkdir()
         started = self.request('/api/start', {'project_id': project['id'], 'name': 'fixture', 'method': 'mvs',
                                               'input_type': 'sfm-output', 'input': 'sfm-run'},
                                cookie=alice_cookie)[1]
-        self.server.jobs.worker.join(timeout=10)
+        self.assertIn('task_id', started, started)
+        self.wait_task(started['task_id'], alice_cookie)
         model = self.request('/api/task?id=' + started['task_id'], cookie=alice_cookie)[1]['models'][0]
         (self.root / model['path']).unlink()
         status, body, _ = self.request('/api/model?id=' + model['id'], cookie=alice_cookie)

@@ -25,21 +25,21 @@ class InterfaceTests(unittest.TestCase):
             self.assertEqual(rows[0]['sparse_points'], 123)
 
     def test_snapshot_includes_sfm_feature_and_matching_logs(self):
-        with tempfile.TemporaryDirectory(dir=app.ROOT / 'outputs') as folder:
-            output = Path(folder)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output = root / 'outputs/run'
             logs = output / 'sfm/logs'
             logs.mkdir(parents=True)
             (logs / '01_features.log').write_text('Features: 8192')
             (logs / '02_matching.log').write_text('Matching block [1/2, 1/2]')
-            jobs = app.Jobs()
-            jobs.output = output
-            jobs.log = output / 'main.log'
-            jobs.process = Mock()
-            jobs.process.poll.return_value = None
-            result = jobs.snapshot()
+            store = app.Workspace(root)
+            task = store.create_task('default', None, 'logs', 'sfm', output, None, {})
+            store.update_task(task['id'], status='running')
+            with patch.object(app, 'ROOT', root):
+                result = app.task_detail(store, task['id'])
             self.assertEqual(result['status'], 'running')
-            self.assertIn('Features: 8192', result['log'])
-            self.assertIn('Matching block [1/2, 1/2]', result['log'])
+            self.assertIn('Features: 8192', result['log_text'])
+            self.assertIn('Matching block [1/2, 1/2]', result['log_text'])
 
     def arguments(self, data):
         with patch.object(app, 'project_path', return_value=app.ROOT / 'web'):

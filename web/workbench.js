@@ -7,7 +7,8 @@ let currentStep = "images",
   current = null,
   pointViewer = null,
   loadedResult = null,
-  polling = false;
+  polling = false,
+  submitting = false;
 let previewURLs = [];
 const fieldIds = [
   "name",
@@ -87,7 +88,7 @@ function options() {
   $("training-advanced").hidden = fast;
   const info = methodInfo[$("method").value];
   $("method-title").textContent = info[0];
-  $("method-help").textContent = info[1] + ({sfm:" 前置：COLMAP；CPU 特征与匹配，照片多时耗时增加。",mvs:" 前置：COLMAP + OpenMVS；复用 SfM，深度估计消耗内存与磁盘。", "3dgs":" 前置：COLMAP 位姿与 Brush；训练需要 GPU，新版数据重新训练。",fast3r:" 需要独立 CUDA/PyTorch 环境；8GB 显存先从 2～4 张开始。"}[$("method").value]);
+  $("method-help").textContent = info[1] + ({sfm:" 前置：COLMAP；CPU 特征与匹配，照片多时耗时增加。",mvs:" 前置：COLMAP + OpenMVS；复用 SfM，深度估计消耗内存与磁盘。", "3dgs":" 前置：COLMAP 位姿与 Brush；当前集成分支的队列暂未开放 3DGS 训练，已有结果仍可查看。",fast3r:" 需要独立 CUDA/PyTorch 环境；8GB 显存先从 2～4 张开始。"}[$("method").value]);
 }
 function renderInputSummary() {
   const item = projectData?.image_sets.find(
@@ -432,6 +433,7 @@ $("form").onsubmit = async (event) => {
     fast3r_model: $("fast3r-model").value.trim(),
     fast3r_max_points: +$("fast3r-max-points").value,
   };
+  submitting = true;
   $("start").disabled = true;
   try {
     const started = await api("/api/start", payload);
@@ -450,6 +452,8 @@ $("form").onsubmit = async (event) => {
   } catch (error) {
     message(error.message, true);
     $("start").disabled = false;
+  } finally {
+    submitting = false;
   }
 };
 async function loadCloud() {
@@ -606,7 +610,8 @@ async function poll() {
   try {
     const job = await api(followTaskId ? "/api/job?task_id=" + encodeURIComponent(followTaskId) : "/api/job");
     renderGlobalJob(job);
-    $("start").disabled = ["preparing", "queued", "starting", "running", "cancelling"].includes(job.status);
+    // 新建任务可进入队列；查看已有任务时保持原有防重复提交行为。
+    $("start").disabled = submitting || (followTaskId && ["preparing", "queued", "starting", "running", "cancelling"].includes(job.status));
     if (followTaskId) {
       const task = await api("/api/task?id=" + followTaskId);
       await showTask(task, job.task_id === followTaskId ? job : null);

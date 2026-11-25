@@ -134,6 +134,9 @@ class TaskRepository:
                 (task_id, project_id, image_set_id, name, method, output, output, log,
                  json.dumps(parameters, ensure_ascii=False), json.dumps(command), now(), idempotency_key,
                  request_fingerprint, json.dumps(request, ensure_ascii=False)))
+            if parameters.get('parent_task_id'):
+                db.execute('UPDATE tasks SET parent_task_id=? WHERE id=?',
+                           (parameters['parent_task_id'], task_id))
         return self.get(task_id), True
 
     def publish(self, task_id, parameters, command, input_fingerprint, resource_request=None):

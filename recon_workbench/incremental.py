@@ -69,3 +69,12 @@ def prepare(base, additions, names, output):
             source.backup(destination)
     shutil.copytree(model, output / 'base_model')
     return images, saved, mapped
+
+
+def parent_fingerprint(base):
+    """Bind a queued expansion to the same validated parent images/model/database."""
+    folder, _, model, saved = parent_info(base)
+    files = [folder / name for name in ('database.db', 'input_manifest.json', 'config.json', 'summary.json')]
+    files += [model / name for name in ('cameras.bin', 'images.bin', 'points3D.bin')]
+    identity = {'images': saved, 'files': [(str(path), digest(path)) for path in files]}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()

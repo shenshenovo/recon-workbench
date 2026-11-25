@@ -206,8 +206,42 @@ class Workspace:
             db.execute('UPDATE projects SET name=? WHERE id=?', (label(name), project_id))
         return self.project(project_id, owner)
 
+    def validate_input_access(self, value, owner=ANY_OWNER, *, allow_ancestor=False):
+        """Reject importing another account's assets under a new project ID."""
+        path = (self.root / value).resolve()
+        path.relative_to(self.root)
+        if owner is ANY_OWNER:
+            return path
+        with self.connect() as db:
+            private = [row[0] for row in db.execute('''
+                SELECT s.path FROM image_sets s JOIN projects p ON p.id=s.project_id
+                WHERE p.owner_id IS NOT ?
+                UNION SELECT t.output FROM tasks t JOIN projects p ON p.id=t.project_id
+                WHERE p.owner_id IS NOT ?
+                UNION SELECT t.output_root FROM tasks t JOIN projects p ON p.id=t.project_id
+                WHERE p.owner_id IS NOT ? AND t.output_root IS NOT NULL
+            ''', (owner, owner, owner))]
+            # Snapshots remain private even when their original image set has moved.
+            rows = db.execute('''SELECT t.parameters FROM tasks t JOIN projects p ON p.id=t.project_id
+                WHERE p.owner_id IS NOT ?''', (owner,)).fetchall()
+        for row in rows:
+            parameters = json.loads(row[0])
+            for key in ('input', 'input_manifest', 'quality_manifest'):
+                if parameters.get(key):
+                    private.append(parameters[key])
+        for value in private:
+            other = (self.root / value).resolve()
+            if path == other or other in path.parents or (not allow_ancestor and path in other.parents):
+                raise AccessDenied('输入路径包含其他账号的私有资源。')
+        return path
+
     def register_set(self, project_id, path, input_type='images', name=None, images=None, owner=ANY_OWNER):
+        with self.quality_lock:
+            return self._register_set(project_id, path, input_type, name, images, owner)
+
+    def _register_set(self, project_id, path, input_type, name, images, owner):
         self.project(project_id, owner)
+        self.validate_input_access(path, owner)
         if input_type not in ('images', 'dataset', 'sfm-output'):
             raise ValueError('输入类型无效。')
         path = self.relative(path)
@@ -225,6 +259,7 @@ class Workspace:
                 image_root = self.root / path / 'images' if input_type == 'dataset' else self.root / path
                 for image in sorted(image_root.rglob('*')):
                     if image.suffix.lower() in ('.jpg', '.jpeg', '.png') and image.is_file():
+                        self.validate_input_access(image, owner)
                         relative = self.relative(image)
                         try:
                             width, height = image_size(image)
@@ -301,6 +336,7 @@ class Workspace:
             images = []
             for path in sorted(base.rglob('*')):
                 if path.is_file() and path.suffix.lower() in ('.jpg', '.jpeg', '.png'):
+                    self.validate_input_access(path, owner)
                     images.append({'name': path.relative_to(base).as_posix(), 'path': self.relative(path),
                                    'bytes': path.stat().st_size})
                     if len(images) > 500:

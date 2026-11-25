@@ -287,7 +287,8 @@ def task_detail(store, task_id, repository=None, *, owner=ANY_OWNER):
                                    'stage': state.get('current_stage'), 'error': state.get('error')})
     task['log_text'] = tail_log(project_path(task['log'])) if task['log'] else ''
     for relative in ('logs/01_sfm.log', 'logs/02_mvs.log', 'logs/02_3dgs.log',
-                     '3dgs/logs/03_train.log', 'mvs/logs/08_dense.log', 'sfm/logs/03_mapper.log'):
+                     '3dgs/logs/03_train.log', 'mvs/logs/08_dense.log', 'sfm/logs/01_features.log',
+                     'sfm/logs/02_matching.log', 'sfm/logs/03_mapper.log', 'fast3r/logs/01_inference.log'):
         path = folder / relative
         if path.is_file():
             task['log_text'] += '\n' + relative + '\n' + tail_log(path)
@@ -393,6 +394,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({"error": str(error)}, 429)
         except AccessDenied as error:
             self.respond({"error": str(error)}, 403)
+        except TaskNotFound as error:
+            self.respond({'error': str(error)}, 404)
         except (ValueError, OSError) as error:
             self.respond({"error": str(error)}, 400)
 
@@ -408,23 +411,32 @@ class Handler(BaseHTTPRequestHandler):
                                  'tasks': self.access.tasks(project_id),
                                  'models': self.access.models(project_id=project_id)})
         if url.path == '/api/tasks':
-            return self.respond(self.access.tasks(query.get('project_id', [None])[0]))
+            rows = self.access.tasks(query.get('project_id', [None])[0])
+            for row in rows:
+                row.update(self.server.jobs.repository.response(row['id'], self.server.jobs.scheduler.blocked_reason,
+                                                                self.server.jobs.scheduler.resources))
+            return self.respond(rows)
+        if url.path == '/api/queue':
+            return self.respond(self.server.jobs.snapshot_queue(query.get('project_id', [None])[0], self.access.owner))
+        if url.path == '/api/resources':
+            return self.respond(self.server.jobs.resources_snapshot(self.access.owner))
         if url.path == '/api/quality':
             return self.respond(self.access.quality(query.get('image_set_id', [''])[0]))
         if url.path == '/api/task':
-            return self.respond(task_detail(self.server.store, query.get('id', [''])[0], self.access.owner))
+            return self.respond(runtime_task_detail(self.server.store, query.get('id', [''])[0],
+                                                    self.server.jobs, owner=self.access.owner))
         if url.path == '/api/source-image':
             image_set = self.access.image_set(query.get('set', [''])[0])
             image = next((image for image in image_set['images'] if image['name'] == query.get('name', [''])[0]), None)
             if not image:
                 raise ValueError('图片不在此图片集中。')
             path = project_path(image['path'])
+            self.server.store.validate_input_access(path, self.access.owner)
             if query.get('preview', [''])[0] == '1':
                 return self.respond(preview_bytes(path), content_type='image/jpeg')
             return self.respond(path.read_bytes(), content_type=mimetypes.guess_type(path.name)[0])
         if url.path == "/api/job":
-            return self.respond(self.server.jobs.snapshot() if self.job_visible()
-                                else {"status": "idle", "log": "", "states": []})
+            return self.respond(self.server.jobs.snapshot(query.get('task_id', [None])[0], self.access.owner))
         if url.path == "/api/runs":
             return self.respond(records(self.server.store, query.get('project_id', [None])[0], self.access.owner))
         if url.path == '/api/cloud':
@@ -441,12 +453,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.download_model(query.get('id', [''])[0])
         if url.path == "/api/folders":
             path = project_path(query.get("path", ["data"])[0])
+            self.server.store.validate_input_access(path, self.access.owner, allow_ancestor=True)
             folders = []
             for child in sorted(path.iterdir()):
                 if child.is_dir() and not child.name.startswith('.'):
                     try:
                         relative = child.resolve().relative_to(ROOT)
-                    except ValueError:
+                        self.server.store.validate_input_access(child, self.access.owner, allow_ancestor=True)
+                    except (ValueError, AccessDenied):
                         continue
                     folders.append({"name": child.name, "path": str(relative)})
             return self.respond({"path": str(path.relative_to(ROOT)), "folders": folders})
@@ -532,6 +546,10 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({"error": str(error)}, 429)
         except AccessDenied as error:
             self.respond({"error": str(error)}, 403)
+        except RuntimeConflict as error:
+            self.respond({'error': str(error), 'code': error.code}, 409)
+        except TaskNotFound as error:
+            self.respond({'error': str(error)}, 404)
         except (ValueError, OSError, KeyError, StopIteration, TypeError, SystemExit) as error:
             self.respond({"error": str(error) or "参数无效"}, 400)
 
@@ -556,9 +574,13 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/start":
             result = self.server.jobs.start(payload, self.access.owner)
         elif path == "/api/cancel":
-            if not self.job_visible():
-                raise AccessDenied('当前任务不属于此账号，不能取消。')
-            result = self.server.jobs.cancel()
+            result = self.server.jobs.cancel(payload.get('task_id'), self.access.owner)
+        elif path == '/api/queue-resume':
+            result = self.server.jobs.resume_queue(self.access.owner)
+        elif path == '/api/task-resume-check':
+            result = self.server.jobs.resume_check(payload.get('task_id'), self.access.owner)
+        elif path == '/api/task-resume':
+            result = self.server.jobs.resume_task(payload.get('task_id'), payload.get('plan_fingerprint'), self.access.owner)
         elif path == "/api/report":
             available = {row["id"]: row for row in records(self.server.store, None, self.access.owner)}
             selected = payload.get("runs", [])

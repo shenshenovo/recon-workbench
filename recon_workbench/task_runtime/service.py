@@ -11,6 +11,7 @@ from .repository import TaskRepository, TaskNotFound
 from .scheduler import Scheduler
 from . import snapshots
 from .recovery import RecoveryManager
+from ..workspace import ANY_OWNER
 
 
 class RuntimeJobs:
@@ -44,16 +45,31 @@ class RuntimeJobs:
         values = vars(args).copy()
         for key in ('output', 'images', 'dataset', 'sfm_output'):
             values.pop(key, None)
+        if payload.get('parent_task_id'):
+            values['incremental_parent_fingerprint'] = payload['incremental_parent_fingerprint']
         return {key: str(value) if isinstance(value, Path) else value for key, value in values.items()}
 
-    def start(self, payload):
+    def start(self, payload, owner=ANY_OWNER):
         # 同一服务内串行准备避免重复快照；SQLite 唯一约束仍负责跨连接去重。
         with self.submit_lock:
             safe_payload = {key: value for key, value in dict(payload).items()
                             if not (isinstance(key, str) and key.startswith('_'))}
-            return self._submit(safe_payload)
+            if safe_payload.get('base_sfm'):
+                raise ValueError('网页请使用 parent_task_id 选择父版本。')
+            if safe_payload.get('parent_task_id'):
+                if safe_payload.get('method') != 'sfm':
+                    raise ValueError('补图扩展只用于 SfM，请先生成新的 SfM 版本。')
+                parent = self.store.task(safe_payload['parent_task_id'], owner)
+                if (parent['project_id'] != safe_payload.get('project_id', 'default') or
+                        parent['status'] != 'completed' or parent['method'] != 'sfm'):
+                    raise ValueError('请选择当前项目已完成的 SfM 父版本。')
+                from ..incremental import parent_info, parent_fingerprint
+                base, _, _, _ = parent_info(self.store.root / parent['output'])
+                safe_payload['base_sfm'] = self.store.relative(base)
+                safe_payload['incremental_parent_fingerprint'] = parent_fingerprint(base)
+            return self._submit(safe_payload, owner)
 
-    def _submit(self, payload):
+    def _submit(self, payload, owner=ANY_OWNER):
         root = self.store.root
         key = payload.get('idempotency_key')
         if key is not None and (not isinstance(key, str) or not 1 <= len(key) <= 128 or '\x00' in key):
@@ -65,16 +81,19 @@ class RuntimeJobs:
         if len(name) > 60 or any(char in name for char in '/\\\x00') or name in ('.', '..'):
             raise ValueError('实验名称无效。')
         project_id = payload.get('project_id', 'default')
-        self.store.project(project_id)
+        self.store.project(project_id, owner)
         image_set = None
         if payload.get('image_set_id'):
-            image_set = self.store.image_set(payload['image_set_id'])
+            image_set = self.store.image_set(payload['image_set_id'], owner)
             if image_set['project_id'] != project_id:
                 raise ValueError('图片集不属于所选项目。')
             payload.update(input=image_set['path'], input_type=image_set['input_type'])
         business = self._business(payload)
         if image_set is None:
-            image_set = self.store.register_set(project_id, payload['input'], payload.get('input_type', 'dataset'))
+            image_set = self.store.register_set(project_id, payload['input'], payload.get('input_type', 'dataset'), owner=owner)
+        self.store.validate_input_access(image_set['path'], owner)
+        if payload.get('parent_task_id') and image_set['input_type'] != 'images':
+            raise ValueError('补图扩展需要原始照片输入。')
         # 原键重放使用第一次固定的输入身份，即使原件后来移动/筛选改变。
         with self.repository.connect() as db:
             existing = db.execute('SELECT id,parameters FROM tasks WHERE project_id=? AND idempotency_key=?', (project_id, key)).fetchone() if key else None
@@ -117,52 +136,81 @@ class RuntimeJobs:
             raise OSError(str(start_error))
         return self.repository.response(task_id, self.scheduler.blocked_reason, self.scheduler.resources)
 
-    def cancel(self, task_id=None):
+    def authorize_task(self, task_id, owner=ANY_OWNER):
+        task = self.repository.get(task_id)
+        self.store.project(task['project_id'], owner)
+        return task
+
+    def cancel(self, task_id=None, owner=ANY_OWNER):
         if task_id is not None and not isinstance(task_id, str):
             raise ValueError('task_id 必须是字符串。')
+        if task_id is None and owner is not ANY_OWNER:
+            task_id = self.snapshot(owner=owner).get('task_id')
+            if task_id is None:
+                return {'cancel_requested': False}
+        if task_id is not None:
+            self.authorize_task(task_id, owner)
         return self.scheduler.cancel(task_id)
 
     def close(self):
         self.scheduler.close()
 
-    def snapshot_queue(self, project_id=None):
-        return self.scheduler.snapshot(project_id)
+    def snapshot_queue(self, project_id=None, owner=ANY_OWNER):
+        if project_id is not None:
+            self.store.project(project_id, owner)
+        result = self.scheduler.snapshot(project_id)
+        if owner is not ANY_OWNER:
+            visible = {task['id'] for task in self.store.tasks(project_id, owner)}
+            for key in ('queued', 'running'):
+                result[key] = [row for row in result[key] if row['id'] in visible]
+        return result
 
-    def resources_snapshot(self):
-        return self.scheduler.resource_snapshot()
+    def resources_snapshot(self, owner=ANY_OWNER):
+        result = self.scheduler.resource_snapshot()
+        if owner is not ANY_OWNER:
+            for gpu in result['gpus']:
+                gpu['busy'] = gpu['allocated_to'] is not None
+                gpu.pop('allocated_to', None)
+        return result
 
-    def resume_queue(self):
+    def resume_queue(self, owner=ANY_OWNER):
+        if owner is not ANY_OWNER:
+            # 全局派发暂停只能由历史工作区的所有者解除。
+            self.store.project('default', owner)
         return self.scheduler.resume_dispatch()
 
-    def resume_check(self, task_id):
+    def resume_check(self, task_id, owner=ANY_OWNER):
         if not isinstance(task_id, str) or not task_id:
             raise ValueError('task_id 必须是字符串。')
+        self.authorize_task(task_id, owner)
         result = self.recovery.inspect(task_id)
         result.pop('_plan', None)
         return result
 
-    def resume_task(self, task_id, plan_fingerprint):
+    def resume_task(self, task_id, plan_fingerprint, owner=ANY_OWNER):
         if not isinstance(task_id, str) or not task_id:
             raise ValueError('task_id 必须是字符串。')
         if not isinstance(plan_fingerprint, str) or len(plan_fingerprint) != 64:
             raise ValueError('plan_fingerprint 无效。')
+        self.authorize_task(task_id, owner)
         result = self.recovery.resume(task_id, plan_fingerprint)
         self.scheduler.notify()
         return result
 
-    def snapshot(self, task_id=None):
+    def snapshot(self, task_id=None, owner=ANY_OWNER):
         from ..server import task_detail
         if task_id is None:
-            queue = self.snapshot_queue()
+            queue = self.snapshot_queue(owner=owner)
             tasks = queue['running'] or queue['queued']
             if tasks:
                 task_id = tasks[0]['id']
             else:
-                tasks = self.store.tasks()
+                tasks = self.store.tasks(owner=owner)
                 if not tasks:
                     return {'status': 'idle', 'log': '', 'states': [], 'progress': None}
                 task_id = tasks[0]['id']
-        task = task_detail(self.store, task_id, self.repository)
+        self.authorize_task(task_id, owner)
+        task = task_detail(self.store, task_id, self.repository, owner=owner)
         import re
         progress = list(re.finditer(r'(\d+)\s*/\s*(\d+)\s+Steps', task['log_text']))
         last = progress[-1] if progress else None

@@ -65,8 +65,12 @@ def provenance():
     for label, command in (("git_head", ["git", "rev-parse", "HEAD"]),
                            ("git_status", ["git", "status", "--short"]),
                            ("colmap_version", ["colmap", "-h"])):
-        completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, timeout=30)
+        try:
+            completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            environment[label] = {'status': 'unavailable', 'error': str(error)}
+            continue
         environment[label] = completed.stdout.strip() if label != "colmap_version" else (
             completed.stdout.strip().splitlines()[:3])
     return {"files_sha256": hashes, "bundle_sha256": identity, "environment": environment}

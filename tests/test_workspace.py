@@ -45,13 +45,14 @@ class WorkspaceTests(unittest.TestCase):
         base = self.root / 'outputs/base/sfm'
         with patch.object(app, 'ROOT', self.root), \
              patch('recon_workbench.incremental.parent_info', return_value=(base, None, None, None)), \
+             patch('recon_workbench.incremental.parent_fingerprint', return_value='fixture-parent-fingerprint'), \
              patch.object(app.subprocess, 'Popen', side_effect=OSError('fixture launch failure')) as launch:
             with self.assertRaises(OSError):
                 app.Jobs(self.store).start({'method': 'sfm', 'image_set_id': image_set['id'],
                                             'parent_task_id': parent['id']})
-        command = launch.call_args.args[0]
-        self.assertEqual(command[command.index('--base-sfm') + 1], str(base))
         child = next(task for task in self.store.tasks() if task['id'] != parent['id'])
+        command = child['command']
+        self.assertEqual(command[command.index('--base-sfm') + 1], str(base))
         self.assertEqual(child['parent_task_id'], parent['id'])
         self.assertEqual(child['status'], 'failed')
         self.assertEqual(self.store.task(parent['id'])['status'], 'completed')

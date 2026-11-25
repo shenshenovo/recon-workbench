@@ -170,6 +170,12 @@ class Scheduler:
         try:
             log = self.workspace.root / (attempt.get('log_path') or task['log'])
             log.parent.mkdir(parents=True, exist_ok=True)
+            parameters = task.get('parameters') or {}
+            if parameters.get('parent_task_id'):
+                from ..incremental import parent_fingerprint
+                if (parent_fingerprint(self.workspace.root / parameters['base_sfm']) !=
+                        parameters.get('incremental_parent_fingerprint')):
+                    raise ValueError('父模型或输入在排队期间发生变化，请重新提交增量任务。')
             with log.open('w', encoding='utf-8') as stream:
                 environment = self.resources.execution_env(task)
                 environment.update(RECON_TASK_ID=task['id'], RECON_ATTEMPT_ID=attempt_id,
