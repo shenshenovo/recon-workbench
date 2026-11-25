@@ -91,6 +91,20 @@ function renderImages() {
     $("project-inputs").innerHTML =
       '<p class="empty">暂无图片集。前往重建工作台上传照片。</p>';
 }
+function modelRow(model) {
+  const row = document.createElement("div");
+  row.className = "model-row";
+  const label = document.createElement("span");
+  label.textContent =
+    model.kind + " · " + fmt(model.bytes / 1024 ** 2) + " MB · " + model.path;
+  const link = document.createElement("a");
+  link.className = "button";
+  link.href = "/api/model?id=" + encodeURIComponent(model.id);
+  link.setAttribute("download", "");
+  link.textContent = "下载";
+  row.append(label, link);
+  return row;
+}
 function renderModels() {
   $("project-models").replaceChildren();
   for (const task of projectData.tasks.filter((t) => t.models.length)) {
@@ -101,16 +115,7 @@ function renderModels() {
     group.append(title);
     const list = document.createElement("div");
     list.className = "panel-body";
-    for (const model of task.models) {
-      const p = document.createElement("p");
-      p.textContent =
-        model.kind +
-        " · " +
-        fmt(model.bytes / 1024 ** 2) +
-        " MB · " +
-        model.path;
-      list.append(p);
-    }
+    for (const model of task.models) list.append(modelRow(model));
     list.append(button("查看任务结果 ↗", () => openResult(task)));
     group.append(list);
     $("project-models").append(group);
@@ -135,6 +140,14 @@ async function openTask(id) {
     2,
   );
   $("history-log").textContent = task.log_text || "暂无运行日志";
+  $("history-models").replaceChildren(
+    ...(task.models.length
+      ? task.models.map(modelRow)
+      : [Object.assign(document.createElement("p"), {
+          className: "empty",
+          textContent: "该任务还没有登记的模型文件。",
+        })]),
+  );
   $("history-view").hidden = task.status !== "completed";
   $("history-follow").hidden = task.status === "completed";
   $("history-view").onclick = $("history-follow").onclick = () =>

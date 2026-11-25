@@ -28,9 +28,32 @@ async function api(path, payload) {
           body: JSON.stringify(payload),
         },
   );
+  if (response.status === 401) {
+    const next = encodeURIComponent(location.pathname + location.search);
+    location.replace("/login?next=" + next);
+    throw Error("请先登录。");
+  }
   const data = await response.json();
   if (!response.ok) throw Error(data.error || "请求失败");
   return data;
+}
+async function currentUser() {
+  try {
+    const state = await api("/api/auth/me");
+    window.currentUser = state.user;
+    $("user-name").textContent = state.user ? state.user.username : "";
+    $("user-chip").hidden = !state.user;
+    return state.user;
+  } catch {
+    return null;
+  }
+}
+async function logout() {
+  try {
+    await api("/api/auth/logout", {});
+  } finally {
+    location.replace("/login");
+  }
 }
 let toastTimer;
 function message(text, error = false) {
@@ -111,9 +134,12 @@ async function globalJob() {
   } catch {}
 }
 async function initShell(page, onProjectChange) {
+  await currentUser();
+  const quit = $("logout");
+  if (quit) quit.onclick = logout;
   const projects = await api("/api/projects");
   if (!projects.some((p) => p.id === window.activeProjectId))
-    window.activeProjectId = "default";
+    window.activeProjectId = projects.length ? projects[0].id : "default";
   $("project-select").replaceChildren(
     ...projects.map((p) => new Option(p.name, p.id)),
   );

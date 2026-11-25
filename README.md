@@ -1,6 +1,6 @@
 # Recon Workbench｜多路线三维重建与可视化系统
 
-本地三维重建工作台：上传照片、检测质量并筛选，选择 SfM / MVS / 3DGS / Fast3R，查看任务进度、点云与实验结果。项目、图片集、任务和模型记录使用 SQLite 保存。
+本地三维重建工作台：上传照片、检测质量并筛选，选择 SfM / MVS / 3DGS / Fast3R，查看任务进度、点云与实验结果。项目、图片集、任务和模型记录使用 SQLite 保存，并按账号隔离、支持模型下载。
 
 本项目负责流程调度、参数适配、任务管理、质量检测、结果展示和评估记录；底层 SfM、MVS、3DGS 分别由 COLMAP、OpenMVS、Brush 执行。已在 Apple Silicon macOS 和 NVIDIA GPU 的 Linux/WSL 环境验证相关路线，网页服务仅监听本机。
 
@@ -28,6 +28,7 @@ python app.py
 | `/reconstruct` 重建工作台 | 图片与筛选 → 重建设置 → 运行与结果，大尺寸点云查看 |
 | `/projects` 项目记录 | 图片集、全部任务历史与模型来源；打开历史结果或复用输入 |
 | `/experiments` 实验对比 | 按来源和路线选择实验、核对条件、查看指标并导出报告 |
+| `/login` 登录与注册 | 注册、登录、退出；首个账号接管已有项目与历史记录 |
 
 切换页面不会停止计算，顶部有运行任务入口。当前浏览器标签中的未保存筛选草稿会保留；已保存的筛选仍由 SQLite 持久化。历史结果使用任务 ID 定位，不会因点击查看而重新重建。前端重构后需要重启原来的 `app.py` 服务并刷新页面以加载新路由。
 
@@ -38,7 +39,10 @@ recon-workbench/
 ├── app.py                  # 网页启动入口
 ├── main.py                 # 统一重建 CLI 入口
 ├── recon_workbench/        # Python 业务代码
-│   ├── server.py           # HTTP、上传和子进程任务管理
+│   ├── server.py           # HTTP 路由、上传、文件响应和子进程任务管理
+│   ├── access.py           # 会话与授权：当前账号、带归属的数据视图、登录编排
+│   ├── accounts.py         # 口令散列、会话令牌、凭据规则与登录限流
+│   ├── errors.py           # AccessDenied：越权映射为 403
 │   ├── pipeline.py         # SfM / MVS / 3DGS 路线调度
 │   ├── reconstruct.py      # COLMAP SfM
 │   ├── densify.py          # OpenMVS 稠密点云、网格、纹理
@@ -103,9 +107,10 @@ python -m unittest tests.test_image_quality
 - [Fast3R GPU 运行指南](docs/FAST3R.md)：独立 CUDA 环境、8GB 显存的小样例和输出说明。
 - [GPU 实测记录](docs/GPU_EXPERIMENTS.md)：kitchen 200 张、Fast3R 容量与过滤、Train 301 张实测。
 - [Tanks and Temples 数据集](docs/TANKS_AND_TEMPLES.md)：301～410 张的三个完整场景与 Train 首轮结果。
+- [账号、权限与模型下载](docs/ACCOUNTS.md)：分层架构、数据模型、权限矩阵、历史数据接管与实测记录。
 - [两台电脑同步](docs/TWO_COMPUTERS.md)：单人切换电脑、推送拉取及本机环境管理。
 - [后续任务分工](docs/TEAM_TASK_PLAN.md)：四名组员的任务和交付要求。
 
 协作时按模块建立分支，通过 Pull Request 合并。源码在 `recon_workbench/`，测试放入 `tests/`，接口变更同步更新 `docs/COLLABORATION.md`。GitHub 不包含照片、模型、数据库、外部工具或虚拟环境；组员需各自配置本机环境。
 
-当前尚未实现账号权限、并行任务队列、网页网格/高斯渲染和模型下载。质量提示属于启发式检查；没有几何真值或统一评估条件时，不据此宣称重建精度提升。
+账号权限、模型下载已经实现（见 [账号、权限与模型下载](docs/ACCOUNTS.md)）：项目、图片集、任务和模型按账号隔离，历史记录由首个注册账号接管，模型可在项目记录与任务详情下载。当前尚未实现并行任务队列、网页网格/高斯渲染；忘记密码需直接修改本机数据库。质量提示属于启发式检查；没有几何真值或统一评估条件时，不据此宣称重建精度提升。
