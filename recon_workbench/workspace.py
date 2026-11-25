@@ -13,6 +13,7 @@ from .errors import AccessDenied
 
 ANY_OWNER = object()
 """不按归属过滤。内部调用（恢复、导入、后台监控）使用，HTTP 层始终传入具体归属。"""
+from .task_runtime.migrations import apply as apply_runtime_migrations
 
 
 def now():
@@ -72,6 +73,7 @@ class Workspace:
             if 'owner_id' not in columns:
                 db.execute('ALTER TABLE projects ADD COLUMN owner_id TEXT')
             db.execute('CREATE INDEX IF NOT EXISTS projects_owner ON projects(owner_id, created_at)')
+            apply_runtime_migrations(db)
             db.execute('INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (?, ?, ?)',
                        ('default', '默认项目 / 历史实验', now()))
 
@@ -338,9 +340,9 @@ class Workspace:
         task_id = uuid.uuid4().hex
         with self.connect() as db:
             db.execute('''INSERT INTO tasks
-                (id,project_id,image_set_id,name,method,status,output,log,parameters,command,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
-                (task_id, project_id, set_id, label(name), method, status, self.relative(output),
+                (id,project_id,image_set_id,name,method,status,output,output_root,log,parameters,command,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (task_id, project_id, set_id, label(name), method, status, self.relative(output), self.relative(output),
                  self.relative(log) if log else None, json.dumps(parameters, ensure_ascii=False),
                  json.dumps(list(command)), now()))
             if parameters.get('parent_task_id'):
@@ -357,8 +359,13 @@ class Workspace:
             raise AccessDenied('任务不存在或无权访问。')
         result = dict(row)
         result.pop('project_owner', None)
-        for key in ('parameters', 'command'):
-            result[key] = json.loads(result[key])
+        for key in ('parameters', 'command', 'resource_request'):
+            if result.get(key) is not None:
+                result[key] = json.loads(result[key])
+        if result.get('resource_request') is None:
+            result['resource_request'] = {
+                'cpu_slots': 1, 'gpu_required': False, 'gpu_backend': None,
+            }
         result['models'] = self.models(task_id)
         return result
 
@@ -430,25 +437,31 @@ class Workspace:
                 fields['finished_at'] = state.get('finished_at') or now()
         self.update_task(task_id, **fields)
         if (status or task['status']) == 'completed':
-            try:
-                row = evaluate.collect_run(folder)
-            except (ValueError, OSError, KeyError):
-                return
             with self.connect() as db:
-                for artifact in row['artifacts']:
-                    try:
-                        path = self.relative(artifact['path'])
-                        resolved = self.root / path
-                        if folder.resolve() not in resolved.parents or not resolved.is_file():
-                            continue
-                    except ValueError:
-                        continue
-                    db.execute('INSERT OR IGNORE INTO models VALUES (?,?,?,?,?)',
-                               (uuid.uuid4().hex, task_id, artifact['kind'], path, artifact['bytes']))
+                self.register_models(db, task_id)
+
+    def register_models(self, db, task_id):
+        """在调用方事务内登记产物；运行时与终态一起提交。"""
+        task = db.execute('SELECT output FROM tasks WHERE id=?', (task_id,)).fetchone()
+        folder = self.root / task['output']
+        try:
+            row = evaluate.collect_run(folder)
+        except (ValueError, OSError, KeyError):
+            raise ValueError('无法读取完成任务的结果摘要。') from None
+        for artifact in row['artifacts']:
+            path = self.relative(artifact['path'])
+            resolved = self.root / path
+            if folder.resolve() not in resolved.parents or not resolved.is_file():
+                raise ValueError('模型产物缺失或越出任务目录。')
+            db.execute('INSERT OR IGNORE INTO models VALUES (?,?,?,?,?)',
+                       (uuid.uuid4().hex, task_id, artifact['kind'], path, artifact['bytes']))
 
     def recover(self):
         """Do not reconnect to or signal old PIDs; they may have been reused."""
         for task in self.tasks():
+            if task.get('current_attempt_id'):
+                # 运行时调度器先核查身份和进程树，再决定终态。
+                continue
             if task['status'] in ('starting', 'running'):
                 state = evaluate.read_json(self.root / task['output'] / 'status.json')
                 status = state.get('status')
@@ -464,7 +477,7 @@ class Workspace:
         outputs = self.root / 'outputs'
         if not outputs.is_dir():
             return
-        known = {task['output'] for task in self.tasks()}
+        known = {path for task in self.tasks() for path in (task['output'], task.get('output_root')) if path}
         for folder in sorted(outputs.iterdir()):
             if not folder.is_dir() or folder.is_symlink() or folder.name.startswith('.'):
                 continue
