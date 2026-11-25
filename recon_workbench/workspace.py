@@ -66,6 +66,8 @@ class Workspace:
                     created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id, expires_at);
             ''')
+            if 'parent_task_id' not in {row[1] for row in db.execute('PRAGMA table_info(tasks)')}:
+                db.execute('ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id)')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(projects)')}
             if 'owner_id' not in columns:
                 db.execute('ALTER TABLE projects ADD COLUMN owner_id TEXT')
@@ -341,6 +343,8 @@ class Workspace:
                 (task_id, project_id, set_id, label(name), method, status, self.relative(output),
                  self.relative(log) if log else None, json.dumps(parameters, ensure_ascii=False),
                  json.dumps(list(command)), now()))
+            if parameters.get('parent_task_id'):
+                db.execute('UPDATE tasks SET parent_task_id=? WHERE id=?', (parameters['parent_task_id'], task_id))
         return self.task(task_id)
 
     def task(self, task_id, owner=ANY_OWNER):

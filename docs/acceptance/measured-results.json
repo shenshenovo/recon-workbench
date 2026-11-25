@@ -1,0 +1,71 @@
+{
+  "date": "2026-11-05",
+  "measured_runs": [
+    {
+      "experiment": "south-building-50-70/baseline50",
+      "status": "completed",
+      "method": "sfm",
+      "input_images": 50,
+      "registered_images": 50,
+      "registration_ratio": 1.0,
+      "points3D": 37024,
+      "mean_point_reprojection_error_px": 0.49951162336806415,
+      "route_elapsed_seconds": 669.762,
+      "warnings": []
+    },
+    {
+      "experiment": "south-building-50-70/incremental70",
+      "status": "completed",
+      "method": "sfm",
+      "input_images": 70,
+      "registered_images": 70,
+      "registration_ratio": 1.0,
+      "points3D": 56977,
+      "mean_point_reprojection_error_px": 0.5123428224768125,
+      "added_images": 20,
+      "added_registered_images": 20,
+      "route_elapsed_seconds": 578.536,
+      "warnings": []
+    },
+    {
+      "experiment": "south-building-50-70/full70",
+      "status": "completed",
+      "method": "sfm",
+      "input_images": 70,
+      "registered_images": 70,
+      "registration_ratio": 1.0,
+      "points3D": 57258,
+      "mean_point_reprojection_error_px": 0.5128864953579411,
+      "route_elapsed_seconds": 1054.163,
+      "warnings": []
+    },
+    {
+      "experiment": "acceptance-new-sfm-mvs",
+      "status": "completed",
+      "method": "mvs",
+      "input_images": 70,
+      "registered_images": 70,
+      "registration_ratio": 1.0,
+      "points3D": 56977,
+      "mean_point_reprojection_error_px": 0.5123428224768125,
+      "dense_points": 351916,
+      "added_images": 20,
+      "added_registered_images": 20,
+      "route_elapsed_seconds": 139.007,
+      "warnings": []
+    }
+  ],
+  "tests": {
+    "run": 85,
+    "skipped": 2,
+    "result": "OK"
+  },
+  "brush": {
+    "steps": 500,
+    "gaussians": 59681,
+    "bytes": 14086266,
+    "platform": "Windows",
+    "version": "0.3.0",
+    "quality_evaluation": false
+  }
+}

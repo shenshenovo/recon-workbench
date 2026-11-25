@@ -28,6 +28,34 @@ def review_fixture(root, store):
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_incremental_rejects_foreign_or_failed_parent(self):
+        images = review_fixture(self.root, self.store)
+        other = self.store.create_project('other-parent')
+        for project, status in ((other['id'], 'completed'), ('default', 'failed')):
+            parent = self.store.create_task(project, None, status, 'sfm',
+                                            self.root / ('outputs/' + project + status), None, {}, status=status)
+            with patch.object(app, 'ROOT', self.root), self.assertRaisesRegex(ValueError, '父版本'):
+                app.Jobs(self.store).start({'method': 'sfm', 'image_set_id': images['id'],
+                                            'parent_task_id': parent['id']})
+
+    def test_incremental_start_forwards_parent_and_preserves_failure_lineage(self):
+        image_set = review_fixture(self.root, self.store)
+        parent = self.store.create_task('default', None, 'base', 'sfm',
+                                        self.root / 'outputs/base', None, {}, status='completed')
+        base = self.root / 'outputs/base/sfm'
+        with patch.object(app, 'ROOT', self.root), \
+             patch('recon_workbench.incremental.parent_info', return_value=(base, None, None, None)), \
+             patch.object(app.subprocess, 'Popen', side_effect=OSError('fixture launch failure')) as launch:
+            with self.assertRaises(OSError):
+                app.Jobs(self.store).start({'method': 'sfm', 'image_set_id': image_set['id'],
+                                            'parent_task_id': parent['id']})
+        command = launch.call_args.args[0]
+        self.assertEqual(command[command.index('--base-sfm') + 1], str(base))
+        child = next(task for task in self.store.tasks() if task['id'] != parent['id'])
+        self.assertEqual(child['parent_task_id'], parent['id'])
+        self.assertEqual(child['status'], 'failed')
+        self.assertEqual(self.store.task(parent['id'])['status'], 'completed')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()

@@ -21,6 +21,7 @@ def get_parser():
     inputs.add_argument("--images", type=Path, help="从照片开始执行")
     inputs.add_argument("--sfm-output", type=Path, help="复用 SfM，仅用于 mvs / 3dgs")
     inputs.add_argument("--dataset", type=Path, help="已整理的 Brush 数据集，仅用于 3dgs")
+    parser.add_argument("--base-sfm", type=Path)
     parser.add_argument("--output", type=Path, help="新的任务目录，默认 outputs/方法_时间戳")
     parser.add_argument("--colmap", default="colmap")
     parser.add_argument("--brush")
@@ -53,6 +54,8 @@ def get_parser():
 
 def build_plan(args, output):
     """Dispatch only; algorithm-specific execution stays in the existing scripts."""
+    if getattr(args, "base_sfm", None) and (args.method != "sfm" or not args.images):
+        raise ValueError("--base-sfm 仅支持 sfm 与 --images。")
     plan = []
     if args.method == 'fast3r':
         if not args.images:
@@ -79,6 +82,8 @@ def build_plan(args, output):
         command = ["-m", "recon_workbench.reconstruct", "--images", args.images, "--output", source,
                    "--colmap", args.colmap, "--stage", "sparse", "--camera-model", args.camera_model,
                    "--matcher", args.matcher, "--max-image-size", args.max_image_size, "--threads", args.threads]
+        if getattr(args, "base_sfm", None):
+            command.extend(["--base-sfm", args.base_sfm])
         if args.single_camera:
             command.append("--single-camera")
         if camera_params:
@@ -117,7 +122,7 @@ def main(argv=None):
     args = get_parser().parse_args(argv)
     pipeline = None
     try:
-        for key in ("images", "sfm_output", "dataset", "openmvs_bin"):
+        for key in ("images", "sfm_output", "dataset", "openmvs_bin", "base_sfm"):
             value = getattr(args, key)
             if value is not None:
                 setattr(args, key, value.expanduser().resolve())
